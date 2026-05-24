@@ -1,0 +1,14 @@
+numpy
+scipy
+pandas
+scikit-learn
+matplotlib
+seaborn
+joblib
+fastapi
+uvicorn
+bleak
+wfdb
+pymongo
+torch
+httpx

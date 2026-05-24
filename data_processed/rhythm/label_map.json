@@ -1,0 +1,12 @@
+{
+  "labels": {
+    "0": "normal",
+    "1": "possible_afib",
+    "2": "other_rhythm",
+    "3": "noise"
+  },
+  "target_sample_rate_hz": 130.0,
+  "window_seconds": 30.0,
+  "samples_per_window": 3900,
+  "source": "PhysioNet/CinC Challenge 2017"
+}

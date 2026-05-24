@@ -1,0 +1,159 @@
+{
+  "window_count": 27,
+  "session_count": 3,
+  "event_count": 2,
+  "overall": {
+    "rhythm_counts": {
+      "other_rhythm": 9,
+      "normal": 18
+    },
+    "rhythm_alert_counts": {
+      "normal": 27
+    },
+    "quality_counts": {
+      "good": 27
+    },
+    "detected_activity_counts": {
+      "ACTIVE": 9,
+      "REST": 9,
+      "SLOW_WALK": 9
+    },
+    "hr_event_counts": {
+      "normal_hr": 27
+    },
+    "anomaly_counts": {
+      "normal": 27
+    },
+    "risk_counts": {
+      "low": 27
+    },
+    "alert_counts": {
+      "normal": 25,
+      "medium": 2
+    },
+    "mean_heart_rate_bpm": 95.01555555555557,
+    "max_heart_rate_bpm": 123.4,
+    "mean_afib_probability": 0.004692463709909477,
+    "max_afib_probability": 0.06420872661720708
+  },
+  "sessions": [
+    {
+      "person_id": "chinh",
+      "state": "active",
+      "session_id": "session_20260520_140446",
+      "requested_duration_seconds": 300.0,
+      "ecg_duration_seconds": 270.66153846153844,
+      "acc_duration_seconds": 275.04,
+      "window_count": 9,
+      "mean_heart_rate_bpm": 114.28222222222222,
+      "max_heart_rate_bpm": 123.4,
+      "mean_afib_probability": 0.002372392161126341,
+      "max_afib_probability": 0.005688757946752291,
+      "max_af_burden_percent": 0.0,
+      "rhythm_counts": {
+        "other_rhythm": 9
+      },
+      "rhythm_alert_counts": {
+        "normal": 9
+      },
+      "quality_counts": {
+        "good": 9
+      },
+      "detected_activity_counts": {
+        "ACTIVE": 9
+      },
+      "hr_event_counts": {
+        "normal_hr": 9
+      },
+      "anomaly_counts": {
+        "normal": 9
+      },
+      "risk_counts": {
+        "low": 9
+      },
+      "alert_counts": {
+        "normal": 9
+      }
+    },
+    {
+      "person_id": "chinh",
+      "state": "rest",
+      "session_id": "session_20260520_133721",
+      "requested_duration_seconds": 300.0,
+      "ecg_duration_seconds": 270.66153846153844,
+      "acc_duration_seconds": 275.04,
+      "window_count": 9,
+      "mean_heart_rate_bpm": 72.80222222222223,
+      "max_heart_rate_bpm": 82.55,
+      "mean_afib_probability": 0.00972321131133185,
+      "max_afib_probability": 0.06420872661720708,
+      "max_af_burden_percent": 0.0,
+      "rhythm_counts": {
+        "normal": 9
+      },
+      "rhythm_alert_counts": {
+        "normal": 9
+      },
+      "quality_counts": {
+        "good": 9
+      },
+      "detected_activity_counts": {
+        "REST": 9
+      },
+      "hr_event_counts": {
+        "normal_hr": 9
+      },
+      "anomaly_counts": {
+        "normal": 9
+      },
+      "risk_counts": {
+        "low": 9
+      },
+      "alert_counts": {
+        "normal": 9
+      }
+    },
+    {
+      "person_id": "chinh",
+      "state": "walk",
+      "session_id": "session_20260520_135829",
+      "requested_duration_seconds": 300.0,
+      "ecg_duration_seconds": 270.66153846153844,
+      "acc_duration_seconds": 275.04,
+      "window_count": 9,
+      "mean_heart_rate_bpm": 97.96222222222222,
+      "max_heart_rate_bpm": 107.85,
+      "mean_afib_probability": 0.0019817876572702404,
+      "max_afib_probability": 0.00787814039990791,
+      "max_af_burden_percent": 0.0,
+      "rhythm_counts": {
+        "normal": 9
+      },
+      "rhythm_alert_counts": {
+        "normal": 9
+      },
+      "quality_counts": {
+        "good": 9
+      },
+      "detected_activity_counts": {
+        "SLOW_WALK": 9
+      },
+      "hr_event_counts": {
+        "normal_hr": 9
+      },
+      "anomaly_counts": {
+        "normal": 9
+      },
+      "risk_counts": {
+        "low": 9
+      },
+      "alert_counts": {
+        "normal": 7,
+        "medium": 2
+      }
+    }
+  ],
+  "input_dir": "data_raw\\real_data",
+  "output_dir": "data_processed\\real_data_eval\\chinh",
+  "window_seconds": 30.0
+}

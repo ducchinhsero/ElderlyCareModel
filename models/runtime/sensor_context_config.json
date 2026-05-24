@@ -1,0 +1,286 @@
+{
+  "version": 1,
+  "generated_at": "2026-05-21T03:41:27.329492+00:00",
+  "source_type": "real_data_sensor_context_calibration",
+  "input_dir": "data_raw\\real_data",
+  "person_id": "chinh",
+  "window_seconds": 30.0,
+  "source_sessions": [
+    {
+      "person_id": "chinh",
+      "state": "active",
+      "session_id": "session_20260520_140446",
+      "session_dir": "data_raw\\real_data\\chinh\\active\\session_20260520_140446",
+      "window_count": 9
+    },
+    {
+      "person_id": "chinh",
+      "state": "rest",
+      "session_id": "session_20260520_133721",
+      "session_dir": "data_raw\\real_data\\chinh\\rest\\session_20260520_133721",
+      "window_count": 9
+    },
+    {
+      "person_id": "chinh",
+      "state": "walk",
+      "session_id": "session_20260520_135829",
+      "session_dir": "data_raw\\real_data\\chinh\\walk\\session_20260520_135829",
+      "window_count": 9
+    }
+  ],
+  "window_counts": {
+    "acc": 27,
+    "signal_quality": 27,
+    "rhythm": 27
+  },
+  "activity": {
+    "vm_std_thresholds_mg": {
+      "36.843": "REST",
+      "89.171": "SLOW_WALK",
+      "250.0": "WALK"
+    },
+    "observed_vm_std_by_state": {
+      "active": {
+        "count": 9,
+        "min": 314.031,
+        "p05": 347.515,
+        "median": 521.133,
+        "p95": 886.93,
+        "p99": 1015.044,
+        "max": 1047.073
+      },
+      "rest": {
+        "count": 9,
+        "min": 5.251,
+        "p05": 5.379,
+        "median": 8.284,
+        "p95": 11.442,
+        "p99": 12.002,
+        "max": 12.142
+      },
+      "walk": {
+        "count": 9,
+        "min": 60.264,
+        "p05": 62.244,
+        "median": 73.643,
+        "p95": 84.171,
+        "p99": 84.428,
+        "max": 84.492
+      }
+    },
+    "notes": [
+      "Thresholds are calibrated from labeled rest/walk/active Polar H10 real_data windows.",
+      "Values below the first threshold are REST; above the last threshold are ACTIVE."
+    ]
+  },
+  "fall": {
+    "impact_threshold_mg": 2000.0,
+    "strong_impact_mg": 2800.0,
+    "active_fall_candidate_min_impact_mg": 3166.207,
+    "free_fall_threshold_mg": 500.0,
+    "post_still_std_mg": 120.0,
+    "prox_s": 1.0,
+    "post_still_seconds": 3.0,
+    "min_post_still_seconds": 2.0,
+    "observed_vm_max_by_state": {
+      "active": {
+        "count": 9,
+        "min": 2242.277,
+        "p05": 2283.856,
+        "median": 2572.57,
+        "p95": 3839.559,
+        "p99": 4458.24,
+        "max": 4612.91
+      },
+      "rest": {
+        "count": 9,
+        "min": 1042.481,
+        "p05": 1042.712,
+        "median": 1049.435,
+        "p95": 1064.077,
+        "p99": 1064.245,
+        "max": 1064.287
+      },
+      "walk": {
+        "count": 9,
+        "min": 1357.428,
+        "p05": 1359.933,
+        "median": 1377.399,
+        "p95": 1500.817,
+        "p99": 1504.943,
+        "max": 1505.974
+      }
+    },
+    "notes": [
+      "No real fall labels are assumed. ACTIVE false-fall reduction is handled by a higher active_fall_candidate_min_impact_mg gate.",
+      "Fall still requires impact + free-fall + post-still."
+    ]
+  },
+  "signal_quality": {
+    "min_seconds": 10.0,
+    "max_nan_ratio": 0.01,
+    "max_zero_ratio": 0.8,
+    "min_amplitude_std": 0.05,
+    "min_amplitude_range": 0.2,
+    "min_r_peak_count": 6,
+    "min_valid_rr_ratio": 0.8,
+    "max_rr_outlier_ratio": 0.472,
+    "observed_by_state": {
+      "active": {
+        "score": {
+          "count": 9,
+          "min": 1.0,
+          "p05": 1.0,
+          "median": 1.0,
+          "p95": 1.0,
+          "p99": 1.0,
+          "max": 1.0
+        },
+        "amplitude_std": {
+          "count": 9,
+          "min": 233.886,
+          "p05": 237.909,
+          "median": 259.07,
+          "p95": 378.971,
+          "p99": 415.282,
+          "max": 424.36
+        },
+        "amplitude_range": {
+          "count": 9,
+          "min": 2332.0,
+          "p05": 2374.8,
+          "median": 2623.0,
+          "p95": 8140.2,
+          "p99": 8683.24,
+          "max": 8819.0
+        },
+        "rr_outlier_ratio": {
+          "count": 9,
+          "min": 0.0,
+          "p05": 0.0,
+          "median": 0.0,
+          "p95": 0.029,
+          "p99": 0.034,
+          "max": 0.035
+        }
+      },
+      "rest": {
+        "score": {
+          "count": 9,
+          "min": 1.0,
+          "p05": 1.0,
+          "median": 1.0,
+          "p95": 1.0,
+          "p99": 1.0,
+          "max": 1.0
+        },
+        "amplitude_std": {
+          "count": 9,
+          "min": 209.181,
+          "p05": 210.965,
+          "median": 216.073,
+          "p95": 218.827,
+          "p99": 219.016,
+          "max": 219.063
+        },
+        "amplitude_range": {
+          "count": 9,
+          "min": 2159.0,
+          "p05": 2159.8,
+          "median": 2209.0,
+          "p95": 2259.6,
+          "p99": 2269.52,
+          "max": 2272.0
+        },
+        "rr_outlier_ratio": {
+          "count": 9,
+          "min": 0.0,
+          "p05": 0.0,
+          "median": 0.054,
+          "p95": 0.125,
+          "p99": 0.148,
+          "max": 0.154
+        }
+      },
+      "walk": {
+        "score": {
+          "count": 9,
+          "min": 1.0,
+          "p05": 1.0,
+          "median": 1.0,
+          "p95": 1.0,
+          "p99": 1.0,
+          "max": 1.0
+        },
+        "amplitude_std": {
+          "count": 9,
+          "min": 217.722,
+          "p05": 217.818,
+          "median": 219.264,
+          "p95": 230.921,
+          "p99": 234.4,
+          "max": 235.27
+        },
+        "amplitude_range": {
+          "count": 9,
+          "min": 2303.0,
+          "p05": 2303.0,
+          "median": 2349.0,
+          "p95": 2596.8,
+          "p99": 2668.16,
+          "max": 2686.0
+        },
+        "rr_outlier_ratio": {
+          "count": 9,
+          "min": 0.136,
+          "p05": 0.153,
+          "median": 0.34,
+          "p95": 0.449,
+          "p99": 0.459,
+          "max": 0.462
+        }
+      }
+    }
+  },
+  "rhythm_alert": {
+    "activity_other_rhythm_afib_probability_threshold": 0.1,
+    "possible_afib_medium_probability": 0.28,
+    "possible_afib_high_probability": 0.8,
+    "observed_possible_afib_probability_by_state": {
+      "active": {
+        "count": 9,
+        "min": 0.0,
+        "p05": 0.0,
+        "median": 0.002,
+        "p95": 0.006,
+        "p99": 0.006,
+        "max": 0.006
+      },
+      "rest": {
+        "count": 9,
+        "min": 0.0,
+        "p05": 0.0,
+        "median": 0.001,
+        "p95": 0.045,
+        "p99": 0.062,
+        "max": 0.066
+      },
+      "walk": {
+        "count": 9,
+        "min": 0.001,
+        "p05": 0.001,
+        "median": 0.001,
+        "p95": 0.006,
+        "p99": 0.008,
+        "max": 0.008
+      }
+    },
+    "notes": [
+      "other_rhythm during WALK/ACTIVE remains normal only when AF probability is below the calibrated activity threshold.",
+      "Possible AFib alert thresholds remain clinically conservative unless overridden separately.",
+      "possible_afib_medium_probability is tuned on rhythm validation data to improve AFib recall while keeping precision above the configured floor."
+    ],
+    "possible_afib_medium_probability_source": "rhythm_validation_threshold_tuning",
+    "possible_afib_medium_probability_metrics_path": "models\\metrics\\rhythm_threshold_tuning.json"
+  }
+}

@@ -1,0 +1,18 @@
+{
+  "output_dir": "data_processed\\rhythm",
+  "X_shape": [
+    10151,
+    3900
+  ],
+  "y_shape": [
+    10151
+  ],
+  "label_distribution": {
+    "normal": 5959,
+    "possible_afib": 903,
+    "other_rhythm": 2990,
+    "noise": 299
+  },
+  "missing_record_count": 0,
+  "missing_records_preview": []
+}

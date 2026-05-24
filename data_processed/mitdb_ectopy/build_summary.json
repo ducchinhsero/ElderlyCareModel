@@ -1,0 +1,24 @@
+{
+  "input_dir": "data_raw\\mitdb",
+  "output_dir": "data_processed\\mitdb_ectopy",
+  "records_requested": 48,
+  "records_skipped": [],
+  "X_shape": [
+    2880,
+    3900
+  ],
+  "y_shape": [
+    2880
+  ],
+  "label_distribution": {
+    "normal": 1333,
+    "pvc": 946,
+    "pac": 293,
+    "mixed_ectopic": 141,
+    "other": 167
+  },
+  "target_sample_rate_hz": 130.0,
+  "window_seconds": 30.0,
+  "samples_per_window": 3900,
+  "include_other": true
+}

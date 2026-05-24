@@ -1,0 +1,30 @@
+[
+  {
+    "person_id": "chinh",
+    "expected_state": "walk",
+    "session_id": "session_20260520_135829",
+    "window_index": 1,
+    "start_seconds": 30.0,
+    "end_seconds": 60.0,
+    "heart_rate_bpm": 105.88,
+    "detected_activity": "SLOW_WALK",
+    "event_type": "hr_context",
+    "severity": "medium",
+    "label": "WATCH",
+    "reason": "HR=106 elevated for SLOW_WALK (>105)"
+  },
+  {
+    "person_id": "chinh",
+    "expected_state": "walk",
+    "session_id": "session_20260520_135829",
+    "window_index": 8,
+    "start_seconds": 240.0,
+    "end_seconds": 270.0,
+    "heart_rate_bpm": 107.85,
+    "detected_activity": "SLOW_WALK",
+    "event_type": "hr_context",
+    "severity": "medium",
+    "label": "WATCH",
+    "reason": "HR=108 elevated for SLOW_WALK (>105)"
+  }
+]

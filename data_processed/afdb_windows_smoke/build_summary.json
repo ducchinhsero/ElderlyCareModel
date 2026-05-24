@@ -1,0 +1,31 @@
+{
+  "input_dir": "data_raw\\afdb",
+  "output_dir": "data_processed\\afdb_windows_smoke",
+  "records_requested": 3,
+  "records_skipped": [
+    {
+      "record_id": "00735",
+      "reason": "missing .dat file"
+    },
+    {
+      "record_id": "03665",
+      "reason": "missing .dat file"
+    }
+  ],
+  "X_shape": [
+    1227,
+    3900
+  ],
+  "y_shape": [
+    1227
+  ],
+  "episode_count": 7,
+  "label_distribution": {
+    "0": 1220,
+    "1": 7
+  },
+  "target_sample_rate_hz": 130.0,
+  "window_seconds": 30.0,
+  "samples_per_window": 3900,
+  "afib_fraction_threshold": 0.5
+}

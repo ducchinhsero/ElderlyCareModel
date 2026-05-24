@@ -1,0 +1,8 @@
+{
+  "labels": {
+    "0": "normal",
+    "1": "possible_afib",
+    "2": "other_rhythm",
+    "3": "noise"
+  }
+}

@@ -1,0 +1,29 @@
+{
+  "input_dir": "data_processed\\rhythm",
+  "nstdb_dir": "data_raw/nstdb",
+  "output_dir": "data_processed\\rhythm_nstdb_augmented",
+  "X_shape": [
+    11751,
+    3900
+  ],
+  "y_shape": [
+    11751
+  ],
+  "augmented_noise_windows": 1600,
+  "noise_records": [
+    "bw",
+    "em",
+    "ma"
+  ],
+  "snr_db_values": [
+    -3.0,
+    0.0,
+    3.0
+  ],
+  "label_distribution": {
+    "0": 5959,
+    "1": 903,
+    "2": 2990,
+    "3": 1899
+  }
+}

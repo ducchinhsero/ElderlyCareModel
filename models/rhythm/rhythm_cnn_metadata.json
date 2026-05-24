@@ -1,0 +1,14 @@
+{
+  "model": "RhythmCnn1D",
+  "input_length": 3900,
+  "num_classes": 4,
+  "sample_rate_hz": 130.0,
+  "window_seconds": 30.0,
+  "labels": {
+    "0": "normal",
+    "1": "possible_afib",
+    "2": "other_rhythm",
+    "3": "noise"
+  },
+  "dropout": 0.25
+}

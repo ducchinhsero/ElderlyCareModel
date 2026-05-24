@@ -1,0 +1,14 @@
+{
+  "features": [
+    "RR_mean",
+    "SDNN",
+    "RMSSD",
+    "pNN50",
+    "LF/HF",
+    "mean_amplitude",
+    "std_amplitude",
+    "mean_energy",
+    "std_energy",
+    "mean_qrs_slope"
+  ]
+}

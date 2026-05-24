@@ -1,0 +1,44 @@
+{
+  "source": "afdb_long_term_evaluation",
+  "decision_mode": "probability_only",
+  "episode_threshold": 0.05,
+  "afib_probability_threshold": 0.05,
+  "alert_threshold": 0.28,
+  "min_consecutive_windows": 2,
+  "selection_policy": {
+    "candidate_mode": "probability_only",
+    "precision_floor": 0.8,
+    "episode_precision_floor": 0.75,
+    "max_false_episode_per_hour": 1.0,
+    "fallback_used": false,
+    "objective": "maximize f1, then minimize episode burden error and false episode/hour"
+  },
+  "selected_metrics": {
+    "decision_mode": "probability_only",
+    "threshold": 0.05,
+    "min_consecutive_windows": 2,
+    "precision": 0.8894645941278065,
+    "recall": 0.7355829316193537,
+    "f1": 0.805237955633734,
+    "predicted_af_burden_percent": 32.96327924850555,
+    "episode_af_burden_percent": 30.664674067748365,
+    "af_burden_absolute_error_percent": 6.8958155422715635,
+    "episode_af_burden_absolute_error_percent": 9.194420723028749,
+    "episode_sensitivity": 0.8041666666666667,
+    "episode_precision": 0.7969432314410481,
+    "false_episode_per_hour": 0.7941929974380871
+  },
+  "generated_from_metrics_path": "models\\metrics\\afdb_long_term_metrics.json",
+  "dataset_dir": "data_processed\\afdb_windows",
+  "model_dir": "models\\rhythm",
+  "window_count": 28104,
+  "alert_threshold_source": "rhythm_validation_threshold_tuning",
+  "alert_threshold_metrics_path": "models\\metrics\\rhythm_threshold_tuning.json",
+  "alert_threshold_selected_metrics": {
+    "threshold": 0.28,
+    "precision": 0.8654970760233918,
+    "recall": 0.9079754601226994,
+    "f1": 0.8862275449101796,
+    "predicted_positive_ratio": 0.08473736372646185
+  }
+}

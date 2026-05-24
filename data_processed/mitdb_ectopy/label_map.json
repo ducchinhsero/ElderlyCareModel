@@ -1,0 +1,9 @@
+{
+  "labels": {
+    "0": "normal",
+    "1": "pvc",
+    "2": "pac",
+    "3": "mixed_ectopic",
+    "4": "other"
+  }
+}
