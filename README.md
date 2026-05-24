@@ -2,6 +2,29 @@ Download and place in 'dataset' :
 - https://www.kaggle.com/datasets/orvile/wesad-wearable-stress-affect-detection-dataset/code?datasetId=7192727&sortBy=voteCount | rename 'WESAD'
 - https://www.kaggle.com/code/azazurrehmanbutt/ecg-classification-using-ml-dl | rename 'mitbih'
 
+External data folders not tracked by GitHub:
+
+Some folders are intentionally excluded from GitHub because they contain large datasets, local runtime data, or personal ECG/ACC recordings. Download them from the project Google Drive and place them back into the project root with the same paths.
+
+Google Drive:
+
+- https://drive.google.com/drive/folders/1MxtozBqBwf7SvtdJsg9ONMA4V-0SLR6G?usp=drive_link
+
+Expected local paths after download:
+
+```text
+dataset/realtime_logs/
+dataset/collected/
+data_raw/
+```
+
+Notes:
+
+- `dataset/realtime_logs/`: local SQLite database, raw realtime ECG/ACC chunks, personal baseline, calibration/runtime logs.
+- `dataset/collected/`: personal ECG/ACC recordings collected from real users for calibration/evaluation.
+- `data_raw/`: original large public datasets such as WESAD, CinC 2017, AFDB, MITDB, NSTDB. GitHub only keeps `.gitkeep` placeholders.
+- Do not commit these folders unless the team explicitly decides to use Git LFS or a separate private data repository.
+
 Install dependencies:
 
 ```bash

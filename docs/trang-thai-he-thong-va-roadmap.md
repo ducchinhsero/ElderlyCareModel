@@ -60,6 +60,30 @@ Backend folder:
 D:\DATN\elderly_care-amine\elderly_care-amine
 ```
 
+## 2.1 Thu muc du lieu ngoai GitHub
+
+Cac thu muc sau khong day len GitHub vi chua du lieu lon, du lieu runtime local hoac ECG/ACC ca nhan:
+
+```text
+dataset/realtime_logs/
+dataset/collected/
+data_raw/
+```
+
+Nguoi phat trien can tai tu Google Drive va dat dung vao project root:
+
+```text
+https://drive.google.com/drive/folders/1MxtozBqBwf7SvtdJsg9ONMA4V-0SLR6G?usp=drive_link
+```
+
+Y nghia:
+
+- `dataset/realtime_logs/`: SQLite runtime DB, raw ECG/ACC chunks, personal baseline, calibration data, sync/log runtime.
+- `dataset/collected/`: du lieu ECG/ACC ca nhan da thu thuc te, dung cho calibration/evaluation.
+- `data_raw/`: dataset goc lon nhu WESAD, CinC 2017, AFDB, MITDB, NSTDB. GitHub chi giu `.gitkeep`.
+
+Khong commit cac thu muc tren len GitHub neu chua co quy uoc Git LFS/private data repository.
+
 ## 3. Cac phan da hoan thanh
 
 ### 3.1 Realtime ECG pipeline
