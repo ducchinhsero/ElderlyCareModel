@@ -19,7 +19,7 @@ def _prediction(timestamp, activity_state="REST", quality="good"):
         "sample_rate_hz": 130.0,
         "window_count": 1,
         "heart_rate_bpm": 72.0,
-        "emotion": {"label": "neutral"},
+        "stress": {"label": "non_stress"},
         "anomaly": {"label": "normal", "value": 0},
         "rhythm": {"label": "normal", "possible_afib_probability": 0.0},
         "ectopy": {"label": "normal"},

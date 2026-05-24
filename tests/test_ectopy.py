@@ -65,7 +65,7 @@ class EctopyTest(unittest.TestCase):
                     "sample_rate_hz": 130.0,
                     "window_count": 1,
                     "heart_rate_bpm": 80.0,
-                    "emotion": {},
+                    "stress": {},
                     "anomaly": {},
                     "rhythm": {"label": "normal", "possible_afib_probability": 0.0},
                     "ectopy": {

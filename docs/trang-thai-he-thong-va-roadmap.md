@@ -363,18 +363,16 @@ Mac dinh hien tai:
 - Chua xoa chunk baseline usable.
 - Chi xoa chunk da sync va qua `retention_hours`.
 
-### 4.4 Emotion model dang tach rieng
+### 4.4 Stress model da co adapter tich hop
 
-Emotion detect WESAD do teammate phu trach.
+Emotion model 3 lop cu da duoc thay trong API chinh bang stress model binary.
 
 Can luu y:
 
-- Khong nen tiep tuc sua sau model emotion trong repo nay neu teammate dang lam branch/logic rieng.
-- Khi teammate hoan thanh, can hop nhat:
-  - model artifact
-  - feature schema
-  - inference API
-  - UI wording
+- Public output moi la `stress`, khong dung `emotion`.
+- Artifact nam tai `models/stress/`.
+- Training entrypoint: `python -m src.training.train_stress_wesad --wesad-root data_raw/wesad`.
+- Realtime stress can rolling RR buffer khoang 300 giay; khi chua du du lieu se tra `unknown`.
 
 ### 4.5 Model benh ly dai han chua hoan thanh
 
@@ -531,7 +529,7 @@ flutter build web --no-wasm-dry-run
 - Khong xoa raw local neu chua sync MongoDB thanh cong.
 - Khong xoa baseline usable chunks neu baseline/calibration can trace lai.
 - Output y khoa phai la screening/risk/suspicion, khong chan doan chac chan.
-- Emotion model hien de teammate xu ly, chi tich hop khi artifact/schema san sang.
+- Stress model WESAD hien co adapter/schema rieng; khi doi artifact phai chay lai unit test va kiem tra `/health`.
 - Moi thay doi lon can chay:
 
 ```powershell

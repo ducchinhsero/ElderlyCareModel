@@ -24,7 +24,7 @@ class StorageEventsTest(unittest.TestCase):
                 "sample_rate_hz": 130.0,
                 "window_count": 1,
                 "heart_rate_bpm": 122.5,
-                "emotion": {"label": "unknown"},
+                "stress": {"label": "unknown"},
                 "anomaly": {"label": "normal", "value": 0},
                 "rhythm": {
                     "label": "possible_afib",
@@ -97,7 +97,7 @@ class StorageEventsTest(unittest.TestCase):
                     "sample_rate_hz": 130.0,
                     "window_count": 1,
                     "heart_rate_bpm": 48.0,
-                    "emotion": {},
+                    "stress": {},
                     "anomaly": {},
                     "rhythm": {"label": "normal", "possible_afib_probability": 0.0},
                     "hr_event": {"label": "bradycardia", "reason": "Low HR."},

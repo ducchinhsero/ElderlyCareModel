@@ -182,10 +182,10 @@ def _hr_stats_by_activity(history):
     return {activity: _stats(values) for activity, values in sorted(grouped.items())}
 
 
-def _emotion_distribution(history):
+def _stress_distribution(history):
     counts = {}
     for item in history:
-        label = (item.get("emotion") or {}).get("label") or "unknown"
+        label = (item.get("stress") or {}).get("label") or "unknown"
         counts[label] = counts.get(label, 0) + 1
     total = len(history) or 1
     return {
@@ -276,8 +276,8 @@ def build_personal_baseline(
                 reliable, lambda item: (item.get("anomaly") or {}).get("label") or "unknown"
             ),
         },
-        "emotion": {
-            "distribution": _emotion_distribution(reliable),
+        "stress": {
+            "distribution": _stress_distribution(reliable),
         },
     }
     return baseline

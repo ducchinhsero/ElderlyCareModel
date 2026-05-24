@@ -92,6 +92,10 @@ def _abnormal_anomaly_item(item):
     return anomaly.get("value") == 1 or anomaly.get("label") == "abnormal"
 
 
+def _stress_item(item):
+    return (item.get("stress") or {}).get("label") == "stress" and _is_reliable(item)
+
+
 def _event_label_count(events, event_type, label=None):
     return sum(
         1
@@ -290,6 +294,32 @@ def _build_findings(history, events, data_quality):
             )
         )
 
+    stress_event_count = _count_events(events, "stress_suspicion")
+    reliable_count = sum(1 for item in history if _is_reliable(item))
+    stress_window_count = sum(1 for item in history if _stress_item(item))
+    stress_ratio = stress_window_count / max(reliable_count, 1)
+    if stress_event_count >= 10 or stress_ratio >= 0.50:
+        stress_level = "high"
+    elif stress_event_count >= 3 or stress_ratio >= 0.20:
+        stress_level = "medium"
+    else:
+        stress_level = None
+    if stress_level:
+        findings.append(
+            _finding(
+                "stress_pattern",
+                stress_level,
+                "Repeated stress-like physiological pattern",
+                "Stress-like HRV pattern appeared repeatedly in reliable ECG windows.",
+                {
+                    "event_count": stress_event_count,
+                    "stress_window_count": stress_window_count,
+                    "reliable_prediction_count": reliable_count,
+                    "stress_window_ratio": round(stress_ratio, 4),
+                },
+            )
+        )
+
     anomaly_count = sum(1 for item in history if _abnormal_anomaly_item(item))
     anomaly_ratio = anomaly_count / denominator
     if anomaly_count >= 10 or anomaly_ratio >= 0.20:
@@ -324,6 +354,8 @@ def _recommendations(overall_level, findings, data_quality):
         recommendations.append("Check strap position and skin contact before interpreting rhythm findings.")
     if "fall_risk" in finding_types:
         recommendations.append("Check the user immediately and confirm whether a fall occurred.")
+    if "stress_pattern" in finding_types:
+        recommendations.append("Review activity, sleep, symptoms, and repeated stress-like periods before escalating.")
     if overall_level in {"critical", "high"}:
         recommendations.append("Review the event timeline and contact medical staff if symptoms are present.")
     elif overall_level == "medium":

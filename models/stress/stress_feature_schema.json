@@ -1,0 +1,16 @@
+{
+  "features": [
+    "mean_rr",
+    "sdnn",
+    "rmssd",
+    "pnn50",
+    "lf_power",
+    "hf_power",
+    "lf_hf_ratio",
+    "lf_nu",
+    "hf_nu",
+    "sd1",
+    "sd2",
+    "sd1_sd2_ratio"
+  ]
+}

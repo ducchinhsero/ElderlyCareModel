@@ -23,7 +23,7 @@ def _prediction(
         "sample_rate_hz": 130.0,
         "window_count": 1,
         "heart_rate_bpm": 80.0,
-        "emotion": {"label": "neutral"},
+        "stress": {"label": "non_stress", "confidence": 0.8},
         "anomaly": {"label": "normal", "value": 0},
         "rhythm": {
             "label": rhythm_label,

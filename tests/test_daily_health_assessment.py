@@ -19,6 +19,7 @@ def _prediction(
     signal_quality="good",
     hr_event_label="normal_hr",
     fall_candidate=False,
+    stress_label="non_stress",
 ):
     return {
         "patient_id": patient_id,
@@ -26,7 +27,7 @@ def _prediction(
         "sample_rate_hz": 130.0,
         "window_count": 1,
         "heart_rate_bpm": 80.0,
-        "emotion": {"label": "neutral"},
+        "stress": {"label": stress_label, "confidence": 0.8},
         "anomaly": {
             "label": "abnormal" if anomaly_value == 1 else "normal",
             "value": anomaly_value,
@@ -110,6 +111,13 @@ class DailyHealthAssessmentTest(unittest.TestCase):
         findings = {item["type"]: item for item in result["findings"]}
         self.assertEqual(findings["fall_risk"]["level"], "high")
         self.assertEqual(result["overall"]["level"], "high")
+
+    def test_repeated_stress_windows_produce_stress_finding(self):
+        history = [_prediction(stress_label="stress") for _ in range(20)]
+        events = [{"event_type": "stress_suspicion", "severity": "medium", "label": "stress"} for _ in range(3)]
+        result = build_daily_health_assessment(history, events, patient_id="test_patient")
+        findings = {item["type"]: item for item in result["findings"]}
+        self.assertEqual(findings["stress_pattern"]["level"], "high")
 
     def test_mixed_events_choose_highest_overall_severity(self):
         history = [_prediction(ectopy_label="pvc") for _ in range(20)]

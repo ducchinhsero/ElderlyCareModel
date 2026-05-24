@@ -38,15 +38,17 @@ from src.calibration.guided_baseline import (
 )
 from src.features.ecg_features import (
     ANOMALY_FEATURE_COLUMNS,
-    EMOTION_FEATURE_COLUMNS,
-    EMOTION_LABELS,
+    bandpass_filter,
+    detect_r_peaks,
     evaluate_signal_quality,
     estimate_heart_rate_bpm,
     extract_anomaly_feature_rows,
-    extract_emotion_feature_rows,
     load_feature_schema,
+    rr_intervals_ms_from_peaks,
     rows_to_matrix,
 )
+from src.features.stress_features import STRESS_WINDOW_SECONDS
+from src.inference.stress_inference import RollingRRBuffer, StressPredictor, unknown_stress
 from src.storage.ecg_storage import (
     build_event_timeline,
     build_events_for_prediction,
@@ -64,6 +66,7 @@ from src.storage.ecg_storage import (
     save_assessment_snapshot,
     save_prediction,
     storage_status,
+    timestamp_to_epoch,
 )
 from src.storage.background_sync import (
     BackgroundSyncConfig,
@@ -100,10 +103,7 @@ except ImportError:
 
 
 MODEL_ROOT = os.getenv("MODEL_ROOT", "models")
-EMOTION_MODEL_PATH = os.getenv(
-    "EMOTION_MODEL_PATH",
-    os.path.join(MODEL_ROOT, "emotion", "emotion_model.pkl"),
-)
+STRESS_MODEL_DIR = os.getenv("STRESS_MODEL_DIR", os.path.join(MODEL_ROOT, "stress"))
 ANOMALY_MODEL_PATH = os.getenv(
     "ANOMALY_MODEL_PATH",
     os.path.join(MODEL_ROOT, "anomaly_legacy", "isolation_forest_model.pkl"),
@@ -111,10 +111,6 @@ ANOMALY_MODEL_PATH = os.getenv(
 ANOMALY_SCALER_PATH = os.getenv(
     "ANOMALY_SCALER_PATH",
     os.path.join(MODEL_ROOT, "anomaly_legacy", "anomaly_scaler.pkl"),
-)
-EMOTION_SCHEMA_PATH = os.getenv(
-    "EMOTION_SCHEMA_PATH",
-    os.path.join(MODEL_ROOT, "emotion", "emotion_feature_schema.json"),
 )
 ANOMALY_SCHEMA_PATH = os.getenv(
     "ANOMALY_SCHEMA_PATH",
@@ -199,7 +195,6 @@ RHYTHM_AFIB_ALERT_THRESHOLD = float(
 REALTIME_SAMPLE_RATE_HZ = 130
 WINDOW_SIZE = 10
 STEP_SIZE = 5
-MIN_CONFIDENCE = 0.5
 REALTIME_LOG_PATH = "dataset/realtime_logs/predictions.jsonl"
 ALERT_WEBHOOK_URL = os.getenv("ALERT_WEBHOOK_URL", "").strip()
 ALERT_WEBHOOK_LEVELS = {
@@ -253,7 +248,7 @@ def _load_schema(path, fallback):
         return list(fallback)
 
 
-emotion_model = _load_joblib(EMOTION_MODEL_PATH)
+stress_predictor = StressPredictor(STRESS_MODEL_DIR)
 anomaly_model = _load_joblib(ANOMALY_MODEL_PATH)
 anomaly_scaler = _load_joblib(ANOMALY_SCALER_PATH)
 rhythm_predictor = RhythmFeaturePredictor(
@@ -272,7 +267,6 @@ rhythm_cnn_predictor = RhythmCnnPredictor(
     model_path=RHYTHM_CNN_MODEL_PATH,
     metadata_path=RHYTHM_CNN_METADATA_PATH,
 )
-emotion_feature_columns = _load_schema(EMOTION_SCHEMA_PATH, EMOTION_FEATURE_COLUMNS)
 anomaly_feature_columns = _load_schema(ANOMALY_SCHEMA_PATH, ANOMALY_FEATURE_COLUMNS)
 latest_result = None
 prediction_history = []
@@ -286,6 +280,7 @@ polar_status = {
 }
 calibrated_anomaly_cache = {}
 af_episode_trackers = {}
+stress_rr_buffers = {}
 
 
 def _unknown_rhythm(reason):
@@ -482,67 +477,35 @@ def _validate_feature_schema(actual, expected, name):
         )
 
 
-def _summarize_emotion(feature_rows):
-    if not feature_rows:
-        return {
-            "label": "unknown",
-            "class_id": None,
-            "confidence": 0.0,
-            "probabilities": {},
-        }
+def _get_stress_buffer(patient_id):
+    key = patient_id or "unknown"
+    if key not in stress_rr_buffers:
+        stress_rr_buffers[key] = RollingRRBuffer(max_seconds=max(360.0, STRESS_WINDOW_SECONDS + 60.0))
+    return stress_rr_buffers[key]
 
-    if emotion_model is None:
-        return {
-            "label": "unknown",
-            "class_id": None,
-            "confidence": 0.0,
-            "probabilities": {},
-        }
 
-    try:
-        _validate_feature_schema(emotion_feature_columns, EMOTION_FEATURE_COLUMNS, "emotion")
-    except ValueError as exc:
-        return {
-            "label": "unknown",
-            "class_id": None,
-            "confidence": 0.0,
-            "probabilities": {},
-            "reason": str(exc) + " Retrain emotion model with python -m src.training.train_emotion_wesad.",
-        }
-    X = pd.DataFrame(rows_to_matrix(feature_rows, emotion_feature_columns), columns=emotion_feature_columns)
-
-    if hasattr(emotion_model, "predict_proba"):
-        proba = emotion_model.predict_proba(X)
-        mean_proba = np.mean(proba, axis=0)
-        model_classes = [int(x) for x in emotion_model.classes_]
-        best_index = int(np.argmax(mean_proba))
-        class_id = model_classes[best_index]
-        confidence = float(mean_proba[best_index])
-        probabilities = {
-            EMOTION_LABELS.get(model_classes[i], str(model_classes[i])): float(mean_proba[i])
-            for i in range(len(model_classes))
-        }
-    else:
-        preds = emotion_model.predict(X)
-        values, counts = np.unique(preds, return_counts=True)
-        class_id = int(values[np.argmax(counts)])
-        confidence = float(np.max(counts) / np.sum(counts))
-        probabilities = {EMOTION_LABELS.get(class_id, str(class_id)): confidence}
-
-    if confidence < MIN_CONFIDENCE or class_id not in EMOTION_LABELS:
-        return {
-            "label": "unknown",
-            "class_id": None,
-            "confidence": confidence,
-            "probabilities": probabilities,
-        }
-
-    return {
-        "label": EMOTION_LABELS[class_id],
-        "class_id": class_id,
-        "confidence": confidence,
-        "probabilities": probabilities,
-    }
+def _predict_stress_for_patient(ecg, sample_rate_hz, patient_id, timestamp):
+    filtered = bandpass_filter(ecg, sample_rate_hz)
+    peaks = detect_r_peaks(filtered, sample_rate_hz)
+    chunk_start_epoch = timestamp_to_epoch(timestamp)
+    if chunk_start_epoch is None:
+        chunk_start_epoch = datetime.now().astimezone().timestamp() - (len(ecg) / float(sample_rate_hz))
+    buffer = _get_stress_buffer(patient_id)
+    buffer.add_from_peaks(peaks, sample_rate_hz, chunk_start_epoch=chunk_start_epoch)
+    rr_window, rr_timestamps, coverage = buffer.stress_window(window_seconds=stress_predictor.window_seconds)
+    if not buffer.ready(window_seconds=stress_predictor.window_seconds):
+        result = unknown_stress(
+            "warming_up_stress_window",
+            model_version=stress_predictor.model_version,
+            window_seconds=stress_predictor.window_seconds,
+        )
+        result["rr_count"] = int(rr_window.size)
+        result["coverage_seconds"] = round(float(coverage), 2)
+        return result
+    result = stress_predictor.predict_from_rr(rr_window, rr_timestamps_sec=rr_timestamps)
+    result["rr_count"] = int(rr_window.size)
+    result["coverage_seconds"] = round(float(coverage), 2)
+    return result
 
 
 def _get_calibrated_anomaly(patient_id):
@@ -641,17 +604,17 @@ def _summarize_anomaly(feature_rows, patient_id=None):
     )
 
 
-def _alert_and_message(emotion, anomaly):
-    emotion_label = emotion["label"]
+def _alert_and_message(stress, anomaly):
+    stress_label = stress["label"]
     anomaly_label = anomaly["label"]
 
-    if anomaly_label == "abnormal" and emotion_label == "stress":
+    if anomaly_label == "abnormal" and stress_label == "stress":
         return "critical", "Stress and abnormal ECG signal detected."
     if anomaly_label == "abnormal":
         return "high", "Abnormal ECG signal detected."
-    if emotion_label == "stress":
+    if stress_label == "stress":
         return "medium", "Stress detected. ECG anomaly not detected."
-    if emotion_label in {"neutral", "relaxed"} and anomaly_label == "normal":
+    if stress_label == "non_stress" and anomaly_label == "normal":
         return "normal", "No stress or ECG anomaly detected."
     return "unknown", "Not enough reliable ECG data for a confident result."
 
@@ -681,13 +644,13 @@ def _rhythm_first_alert(rhythm_alert, legacy_alert_level, legacy_message, anomal
     return "unknown", rhythm_message if rhythm_level != "unknown" else legacy_message
 
 
-def _suppress_activity_emotion_alert(alert_level, message, emotion, anomaly, sensor_context):
+def _suppress_activity_stress_alert(alert_level, message, stress, anomaly, sensor_context):
     activity = ((sensor_context or {}).get("activity_state") or "unknown").upper()
-    emotion_label = (emotion or {}).get("label")
+    stress_label = (stress or {}).get("label")
     anomaly_label = (anomaly or {}).get("label")
     if (
         alert_level == "medium"
-        and emotion_label == "stress"
+        and stress_label == "stress"
         and anomaly_label != "abnormal"
         and activity in {"WALK", "ACTIVE"}
     ):
@@ -727,13 +690,7 @@ def _apply_sensor_context_alert(alert_level, message, sensor_context):
 
 def _unknown_outputs_for_quality(signal_quality):
     reason = "; ".join(signal_quality.get("reasons") or ["Poor signal quality"])
-    emotion = {
-        "label": "unknown",
-        "class_id": None,
-        "confidence": 0.0,
-        "probabilities": {},
-        "reason": reason,
-    }
+    stress = unknown_stress(reason, model_version=stress_predictor.model_version, window_seconds=stress_predictor.window_seconds)
     anomaly = {
         "label": "unknown",
         "value": None,
@@ -742,10 +699,10 @@ def _unknown_outputs_for_quality(signal_quality):
         "reason": reason,
     }
     risk = {"level": "unknown", "score": 0.0, "reason": "Signal quality is too poor for risk scoring."}
-    return emotion, anomaly, risk
+    return stress, anomaly, risk
 
 
-def _risk_with_current(patient_id, anomaly, emotion, signal_quality):
+def _risk_with_current(patient_id, anomaly, stress, signal_quality):
     if anomaly.get("value") is None:
         return {
             "level": "unknown",
@@ -765,7 +722,7 @@ def _risk_with_current(patient_id, anomaly, emotion, signal_quality):
     score = float(risk.get("score") or 0.0)
     if anomaly.get("value") == 1:
         score = min(1.0, score + 0.2)
-    if emotion.get("label") == "stress":
+    if stress.get("label") == "stress":
         score = min(1.0, score + 0.05)
 
     if score >= 0.65:
@@ -775,6 +732,19 @@ def _risk_with_current(patient_id, anomaly, emotion, signal_quality):
     else:
         level = "low"
     return {**risk, "level": level, "score": round(score, 3)}
+
+
+def _estimate_heart_rate_from_signal(ecg, sample_rate_hz, feature_rows=None):
+    heart_rate = estimate_heart_rate_bpm(feature_rows or [])
+    if heart_rate is not None:
+        return heart_rate
+    filtered = bandpass_filter(ecg, sample_rate_hz)
+    peaks = detect_r_peaks(filtered, sample_rate_hz)
+    rr_ms = rr_intervals_ms_from_peaks(peaks, sample_rate_hz)
+    rr_ms = rr_ms[(rr_ms >= 300.0) & (rr_ms <= 2000.0)]
+    if rr_ms.size == 0:
+        return None
+    return float(60000.0 / np.mean(rr_ms))
 
 
 def predict_ecg(
@@ -794,9 +764,10 @@ def predict_ecg(
     if ecg.size == 0:
         raise ValueError("ecg_samples must contain at least one sample.")
 
+    result_timestamp = timestamp or datetime.now().astimezone().isoformat()
     signal_quality = evaluate_signal_quality(ecg, float(sample_rate_hz))
     if signal_quality["label"] == "poor":
-        emotion, anomaly, risk = _unknown_outputs_for_quality(signal_quality)
+        stress, anomaly, risk = _unknown_outputs_for_quality(signal_quality)
         rhythm = _unknown_rhythm("Signal quality is too poor for rhythm classification.")
         ectopy = _unknown_ectopy("Signal quality is too poor for PVC/PAC classification.")
         hr_event = _unknown_hr_event("Signal quality is too poor for heart-rate event detection.")
@@ -814,11 +785,11 @@ def predict_ecg(
         alert_level, message = _apply_sensor_context_alert(alert_level, message, sensor_context)
         return {
             "patient_id": patient_id,
-            "timestamp": timestamp or datetime.now().astimezone().isoformat(),
+            "timestamp": result_timestamp,
             "sample_rate_hz": float(sample_rate_hz),
             "window_count": 0,
             "heart_rate_bpm": None,
-            "emotion": emotion,
+            "stress": stress,
             "anomaly": anomaly,
             "rhythm": rhythm,
             "ectopy": ectopy,
@@ -832,13 +803,6 @@ def predict_ecg(
             "message": message,
         }
 
-    emotion_rows = extract_emotion_feature_rows(
-        ecg,
-        sample_rate_hz=float(sample_rate_hz),
-        window_size=WINDOW_SIZE,
-        step_size=STEP_SIZE,
-        filter_signal=True,
-    )
     anomaly_rows = extract_anomaly_feature_rows(
         ecg,
         sample_rate_hz=float(sample_rate_hz),
@@ -847,27 +811,27 @@ def predict_ecg(
         filter_signal=True,
     )
 
-    window_count = max(len(emotion_rows), len(anomaly_rows))
-    emotion = _summarize_emotion(emotion_rows)
+    window_count = len(anomaly_rows)
+    stress = _predict_stress_for_patient(ecg, float(sample_rate_hz), patient_id, result_timestamp)
     anomaly = _summarize_anomaly(anomaly_rows, patient_id=patient_id)
-    risk = _risk_with_current(patient_id, anomaly, emotion, signal_quality)
-    alert_level, message = _alert_and_message(emotion, anomaly)
+    risk = _risk_with_current(patient_id, anomaly, stress, signal_quality)
+    alert_level, message = _alert_and_message(stress, anomaly)
     if risk["level"] == "high" and alert_level not in ("critical", "high"):
         alert_level = "high"
         message = "High ECG risk trend detected from recent history."
     elif risk["level"] == "medium" and alert_level == "normal":
         alert_level = "medium"
         message = "Medium ECG risk trend detected from recent history."
-    heart_rate_bpm = estimate_heart_rate_bpm(emotion_rows or anomaly_rows)
+    heart_rate_bpm = _estimate_heart_rate_from_signal(ecg, float(sample_rate_hz), anomaly_rows)
     sensor_context = summarize_acc_window(
         acc_samples,
         heart_rate_bpm=heart_rate_bpm,
         sample_rate_hz=acc_sample_rate_hz or FS_ACC_HZ,
     )
-    alert_level, message = _suppress_activity_emotion_alert(
+    alert_level, message = _suppress_activity_stress_alert(
         alert_level,
         message,
-        emotion,
+        stress,
         anomaly,
         sensor_context,
     )
@@ -930,11 +894,11 @@ def predict_ecg(
 
     return {
         "patient_id": patient_id,
-        "timestamp": timestamp or datetime.now().astimezone().isoformat(),
+        "timestamp": result_timestamp,
         "sample_rate_hz": float(sample_rate_hz),
         "window_count": window_count,
         "heart_rate_bpm": None if heart_rate_bpm is None else round(heart_rate_bpm, 2),
-        "emotion": emotion,
+        "stress": stress,
         "anomaly": anomaly,
         "rhythm": rhythm,
         "ectopy": ectopy,
@@ -1417,8 +1381,8 @@ if FastAPI is not None:
         <div class="sub">Estimated from RR windows</div>
       </div>
       <div class="card">
-        <div class="label">Emotion</div>
-        <div class="value" id="emotion">--</div>
+        <div class="label">Stress</div>
+        <div class="value" id="stress">--</div>
         <div class="sub" id="confidence">confidence --</div>
       </div>
       <div class="card">
@@ -1536,7 +1500,7 @@ if FastAPI is not None:
               <th>Time</th>
               <th>Patient</th>
               <th>HR</th>
-              <th>Emotion</th>
+              <th>Stress</th>
               <th>Rhythm</th>
               <th>PVC/PAC</th>
               <th>Anomaly</th>
@@ -1598,9 +1562,10 @@ if FastAPI is not None:
       document.getElementById("patient").textContent = result.patient_id || "--";
       document.getElementById("windows").textContent = `${result.window_count || 0} windows`;
       document.getElementById("hr").textContent = formatNumber(result.heart_rate_bpm);
-      document.getElementById("emotion").textContent = result.emotion?.label || "--";
+      document.getElementById("stress").textContent = result.stress?.label || "--";
       document.getElementById("confidence").textContent =
-        `confidence ${Math.round((result.emotion?.confidence || 0) * 100)}%`;
+        `confidence ${Math.round((result.stress?.confidence || 0) * 100)}%`
+        + (result.stress?.reason ? ` | ${result.stress.reason}` : "");
       document.getElementById("anomaly").textContent = result.anomaly?.label || "--";
       document.getElementById("anomaly-windows").textContent =
         `${result.anomaly?.anomaly_windows || 0} / ${result.anomaly?.total_windows || 0} windows`;
@@ -1658,7 +1623,7 @@ if FastAPI is not None:
           <td>${timeText(item.timestamp)}</td>
           <td>${item.patient_id || "--"}</td>
           <td>${formatNumber(item.heart_rate_bpm)}</td>
-          <td>${item.emotion?.label || "--"}</td>
+          <td>${item.stress?.label || "--"}</td>
           <td>${item.rhythm?.label || "--"}</td>
           <td>${item.ectopy?.label || "--"}</td>
           <td>${item.anomaly?.label || "--"}</td>
@@ -1919,7 +1884,10 @@ if FastAPI is not None:
     def health():
         return {
             "status": "ok",
-            "emotion_model_loaded": emotion_model is not None,
+            "stress_model_loaded": stress_predictor.loaded,
+            "stress_model_error": stress_predictor.load_error,
+            "stress_model_dir": STRESS_MODEL_DIR,
+            "stress_model_window_seconds": stress_predictor.window_seconds,
             "anomaly_model_loaded": anomaly_model is not None,
             "anomaly_scaler_loaded": anomaly_scaler is not None,
             "rhythm_model_loaded": rhythm_predictor.loaded,

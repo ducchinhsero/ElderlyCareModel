@@ -4,12 +4,11 @@ import numpy as np
 
 from src.features.ecg_features import (
     ANOMALY_FEATURE_COLUMNS,
-    EMOTION_FEATURE_COLUMNS,
     evaluate_signal_quality,
     extract_anomaly_feature_rows,
-    extract_emotion_feature_rows,
     rows_to_matrix,
 )
+from src.features.stress_features import STRESS_FEATURE_COLUMNS, extract_stress_features, stress_row_to_matrix
 from src.calibration.anomaly_calibration import MIN_BASELINE_FEATURE_ROWS
 from src.api.pipeline import predict_ecg
 
@@ -25,17 +24,14 @@ def synthetic_ecg(sample_rate_hz=130, seconds=30):
 
 
 class ECGFeatureTests(unittest.TestCase):
-    def test_emotion_features_have_expected_schema(self):
-        rows = extract_emotion_feature_rows(
-            synthetic_ecg(),
-            sample_rate_hz=130,
-            window_size=10,
-            step_size=5,
-            filter_signal=False,
-        )
-        matrix = rows_to_matrix(rows, EMOTION_FEATURE_COLUMNS)
-        self.assertGreater(len(rows), 0)
-        self.assertEqual(matrix.shape[1], 10)
+    def test_stress_features_have_expected_schema(self):
+        rr_ms = np.array([800 + ((i % 5) - 2) * 8 for i in range(360)], dtype=float)
+        timestamps = np.cumsum(rr_ms) / 1000.0
+        row = extract_stress_features(rr_ms, rr_timestamps_sec=timestamps)
+        matrix = stress_row_to_matrix(row)
+        self.assertIsNotNone(row)
+        self.assertEqual(list(row.keys()), STRESS_FEATURE_COLUMNS)
+        self.assertEqual(matrix.shape[1], 12)
 
     def test_anomaly_features_have_expected_schema(self):
         rows = extract_anomaly_feature_rows(
@@ -78,6 +74,8 @@ class ECGFeatureTests(unittest.TestCase):
         )
 
         self.assertIn("sensor_context", result)
+        self.assertIn("stress", result)
+        self.assertNotIn("emotion", result)
         self.assertEqual(result["sensor_context"]["activity_state"], "REST")
 
 

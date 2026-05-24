@@ -36,7 +36,7 @@ def _prediction(
         },
         "ectopy": {"label": ectopy_label},
         "anomaly": {"label": anomaly_label, "value": anomaly_value},
-        "emotion": {"label": "neutral"},
+        "stress": {"label": "non_stress"},
         "sensor_context": {"activity_state": activity_state},
     }
 
@@ -61,6 +61,7 @@ class PersonalBaselineTest(unittest.TestCase):
         self.assertEqual(baseline["heart_rate"]["overall"]["count"], 25)
         self.assertLess(baseline["heart_rate"]["overall"]["max"], 200)
         self.assertIn("REST", baseline["heart_rate"]["by_activity"])
+        self.assertIn("non_stress", baseline["stress"]["distribution"])
 
     def test_save_and_status_load_baseline(self):
         with tempfile.TemporaryDirectory() as tmp_dir:

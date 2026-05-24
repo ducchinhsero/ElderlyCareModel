@@ -72,6 +72,7 @@ def _realtime_layer(latest, minutes=DEFAULT_REALTIME_MINUTES):
     rhythm_alert = latest.get("rhythm_alert") or {}
     ectopy = latest.get("ectopy") or {}
     hr_event = latest.get("hr_event") or {}
+    stress = latest.get("stress") or {}
     quality = latest.get("signal_quality") or {}
     sensor = latest.get("sensor_context") or {}
     fall = sensor.get("fall") or {}
@@ -146,6 +147,19 @@ def _realtime_layer(latest, minutes=DEFAULT_REALTIME_MINUTES):
                 {"label": quality.get("label"), "score": quality.get("score")},
             )
         )
+    if stress.get("label") == "stress" and quality.get("label") in {"good", "fair"}:
+        findings.append(
+            _finding(
+                "current_stress_pattern",
+                "medium",
+                "Current stress-like pattern",
+                "Latest reliable ECG window indicates a stress-like HRV pattern.",
+                {
+                    "confidence": stress.get("confidence"),
+                    "stress_probability": (stress.get("probabilities") or {}).get("stress"),
+                },
+            )
+        )
     alert_level = latest.get("alert_level")
     strongest_finding = _level_max(*(finding["level"] for finding in findings)) if findings else "unknown"
     if SEVERITY_ORDER.get(alert_level, 0) > SEVERITY_ORDER.get(strongest_finding, 0):
@@ -186,7 +200,7 @@ def _realtime_layer(latest, minutes=DEFAULT_REALTIME_MINUTES):
         "evidence": {
             "patient_id": latest.get("patient_id"),
             "heart_rate_bpm": latest.get("heart_rate_bpm"),
-            "emotion": (latest.get("emotion") or {}).get("label"),
+            "stress": stress.get("label"),
             "rhythm": rhythm.get("label"),
             "ectopy": ectopy.get("label"),
             "anomaly": (latest.get("anomaly") or {}).get("label"),

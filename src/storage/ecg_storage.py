@@ -76,6 +76,7 @@ def init_db(conn):
             window_count INTEGER NOT NULL,
             heart_rate_bpm REAL,
             emotion_json TEXT NOT NULL,
+            stress_json TEXT NOT NULL DEFAULT '{}',
             anomaly_json TEXT NOT NULL,
             signal_quality_json TEXT NOT NULL,
             risk_json TEXT NOT NULL,
@@ -240,6 +241,8 @@ def init_db(conn):
         conn.execute("ALTER TABLE predictions ADD COLUMN raw_ecg_chunk_ids_json TEXT NOT NULL DEFAULT '[]'")
     if "raw_acc_chunk_ids_json" not in columns:
         conn.execute("ALTER TABLE predictions ADD COLUMN raw_acc_chunk_ids_json TEXT NOT NULL DEFAULT '[]'")
+    if "stress_json" not in columns:
+        conn.execute("ALTER TABLE predictions ADD COLUMN stress_json TEXT NOT NULL DEFAULT '{}'")
     rows = conn.execute(
         "SELECT prediction_id, timestamp FROM predictions WHERE timestamp_epoch IS NULL"
     ).fetchall()
@@ -576,7 +579,64 @@ def upsert_collection_session(
     return collection_session_id
 
 
+def _safe_json(value, fallback=None):
+    if fallback is None:
+        fallback = {}
+    try:
+        parsed = json.loads(value or "{}")
+        return parsed if parsed is not None else fallback
+    except Exception:
+        return fallback
+
+
+def _stress_from_legacy_emotion(emotion):
+    emotion = emotion or {}
+    label = emotion.get("label")
+    confidence = float(emotion.get("confidence") or 0.0)
+    probabilities = emotion.get("probabilities") or {}
+    stress_probability = float(probabilities.get("stress") or (confidence if label == "stress" else 0.0))
+    if label == "stress":
+        return {
+            "label": "stress",
+            "value": 1,
+            "confidence": confidence or stress_probability,
+            "probabilities": {
+                "non_stress": max(0.0, 1.0 - stress_probability),
+                "stress": stress_probability,
+            },
+            "model_version": "legacy_emotion_fallback",
+            "window_seconds": None,
+            "reason": "mapped_from_legacy_emotion",
+        }
+    if label in {"neutral", "relaxed"}:
+        return {
+            "label": "non_stress",
+            "value": 0,
+            "confidence": confidence,
+            "probabilities": {
+                "non_stress": confidence,
+                "stress": stress_probability,
+            },
+            "model_version": "legacy_emotion_fallback",
+            "window_seconds": None,
+            "reason": "mapped_from_legacy_emotion",
+        }
+    return {
+        "label": "unknown",
+        "value": None,
+        "confidence": 0.0,
+        "probabilities": {"non_stress": 0.0, "stress": 0.0},
+        "model_version": "legacy_emotion_fallback",
+        "window_seconds": None,
+        "reason": "legacy_emotion_missing_or_unknown",
+    }
+
+
 def _row_to_result(row):
+    emotion = _safe_json(row["emotion_json"])
+    stress = _safe_json(row["stress_json"])
+    if not stress:
+        stress = _stress_from_legacy_emotion(emotion)
     return {
         "prediction_id": row["prediction_id"],
         "session_id": row["session_id"],
@@ -586,22 +646,22 @@ def _row_to_result(row):
         "sample_rate_hz": row["sample_rate_hz"],
         "window_count": row["window_count"],
         "heart_rate_bpm": row["heart_rate_bpm"],
-        "emotion": json.loads(row["emotion_json"]),
-        "anomaly": json.loads(row["anomaly_json"]),
-        "rhythm": json.loads(row["rhythm_json"] or "{}"),
-        "ectopy": json.loads(row["ectopy_json"] or "{}"),
-        "hr_event": json.loads(row["hr_event_json"] or "{}"),
-        "af_episode": json.loads(row["af_episode_json"] or "{}"),
-        "rhythm_alert": json.loads(row["rhythm_alert_json"] or "{}"),
-        "signal_quality": json.loads(row["signal_quality_json"]),
-        "risk": json.loads(row["risk_json"]),
-        "sensor_context": json.loads(row["sensor_context_json"] or "{}"),
+        "stress": stress,
+        "anomaly": _safe_json(row["anomaly_json"]),
+        "rhythm": _safe_json(row["rhythm_json"]),
+        "ectopy": _safe_json(row["ectopy_json"]),
+        "hr_event": _safe_json(row["hr_event_json"]),
+        "af_episode": _safe_json(row["af_episode_json"]),
+        "rhythm_alert": _safe_json(row["rhythm_alert_json"]),
+        "signal_quality": _safe_json(row["signal_quality_json"]),
+        "risk": _safe_json(row["risk_json"]),
+        "sensor_context": _safe_json(row["sensor_context_json"]),
         "alert_level": row["alert_level"],
         "message": row["message"],
         "raw_ecg_path": row["raw_ecg_path"],
         "raw_acc_path": row["raw_acc_path"],
-        "raw_ecg_chunk_ids": json.loads(row["raw_ecg_chunk_ids_json"] or "[]"),
-        "raw_acc_chunk_ids": json.loads(row["raw_acc_chunk_ids_json"] or "[]"),
+        "raw_ecg_chunk_ids": _safe_json(row["raw_ecg_chunk_ids_json"], fallback=[]),
+        "raw_acc_chunk_ids": _safe_json(row["raw_acc_chunk_ids_json"], fallback=[]),
     }
 
 
@@ -723,6 +783,25 @@ def build_events_for_prediction(item):
             )
         )
 
+    stress = item.get("stress") or {}
+    signal_quality = item.get("signal_quality") or {}
+    activity_state = ((item.get("sensor_context") or {}).get("activity_state") or "unknown").upper()
+    if (
+        stress.get("label") == "stress"
+        and signal_quality.get("label") in {"good", "fair"}
+        and activity_state not in {"WALK", "ACTIVE"}
+    ):
+        events.append(
+            _make_event(
+                item,
+                "stress_suspicion",
+                "medium",
+                "stress",
+                "Stress-like physiological pattern detected in reliable ECG data.",
+                {"stress": stress},
+            )
+        )
+
     hr_context = (item.get("sensor_context") or {}).get("hr_context_alert") or {}
     if hr_context.get("level") in {"WATCH", "ALERT", "CRITICAL"}:
         events.append(
@@ -749,7 +828,6 @@ def build_events_for_prediction(item):
             )
         )
 
-    signal_quality = item.get("signal_quality") or {}
     quality = signal_quality.get("label")
     if quality in {"poor", "noise", "poor_contact", "motion_artifact"}:
         events.append(
@@ -805,6 +883,8 @@ def save_prediction(
     db_path=DB_PATH,
 ):
     result = dict(result)
+    stress = result.get("stress") or _stress_from_legacy_emotion(result.get("emotion") or {})
+    result["stress"] = stress
     prediction_id = result.get("prediction_id") or str(uuid.uuid4())
     result["prediction_id"] = prediction_id
     timestamp = result.get("timestamp") or utc_now_iso()
@@ -879,12 +959,12 @@ def save_prediction(
             """
             INSERT INTO predictions (
                 prediction_id, session_id, patient_id, timestamp, timestamp_epoch, sample_rate_hz,
-                window_count, heart_rate_bpm, emotion_json, anomaly_json,
+                window_count, heart_rate_bpm, emotion_json, stress_json, anomaly_json,
                 rhythm_json, ectopy_json, hr_event_json, af_episode_json, rhythm_alert_json, signal_quality_json,
                 risk_json, sensor_context_json, alert_level, message, raw_ecg_path,
                 raw_acc_path, raw_ecg_chunk_ids_json, raw_acc_chunk_ids_json, created_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 prediction_id,
@@ -896,6 +976,7 @@ def save_prediction(
                 int(result.get("window_count") or 0),
                 result.get("heart_rate_bpm"),
                 json.dumps(result.get("emotion") or {}, ensure_ascii=False),
+                json.dumps(stress, ensure_ascii=False),
                 json.dumps(result.get("anomaly") or {}, ensure_ascii=False),
                 json.dumps(result.get("rhythm") or {}, ensure_ascii=False),
                 json.dumps(result.get("ectopy") or {}, ensure_ascii=False),
@@ -1523,7 +1604,7 @@ def compute_risk_summary(patient_id=None, days=1, db_path=DB_PATH):
     recent = quality_ok[:10]
     abnormal_daily = sum(1 for h in quality_ok if (h.get("anomaly") or {}).get("value") == 1) / len(quality_ok)
     abnormal_recent = sum(1 for h in recent if (h.get("anomaly") or {}).get("value") == 1) / len(recent)
-    stress_recent = sum(1 for h in recent if (h.get("emotion") or {}).get("label") == "stress") / len(recent)
+    stress_recent = sum(1 for h in recent if (h.get("stress") or {}).get("label") == "stress") / len(recent)
 
     score = min(1.0, 0.65 * abnormal_recent + 0.25 * abnormal_daily + 0.10 * stress_recent)
     if score >= 0.65:
@@ -1628,6 +1709,7 @@ def _summary_for_items(items):
         "quality_counts": _count_items(items, lambda item: (item.get("signal_quality") or {}).get("label")),
         "activity_counts": _count_items(items, lambda item: (item.get("sensor_context") or {}).get("activity_state")),
         "hr_event_counts": _count_items(items, lambda item: (item.get("hr_event") or {}).get("label")),
+        "stress_counts": _count_items(items, lambda item: (item.get("stress") or {}).get("label")),
         "alert_counts": _count_items(items, lambda item: item.get("alert_level")),
         "event_counts": event_counts,
     }

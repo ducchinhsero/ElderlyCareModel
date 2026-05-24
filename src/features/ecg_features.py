@@ -7,18 +7,6 @@ import scipy.signal as signal
 from src.config.runtime_config import get_config_section
 
 
-EMOTION_FEATURE_COLUMNS = [
-    "RR_mean",
-    "mean_HR",
-    "RR_min",
-    "RR_max",
-    "RR_range",
-    "CVRR",
-    "SDNN",
-    "RMSSD",
-    "pNN50",
-    "LF/HF",
-]
 ANOMALY_FEATURE_COLUMNS = [
     "RR_mean",
     "SDNN",
@@ -31,13 +19,6 @@ ANOMALY_FEATURE_COLUMNS = [
     "std_energy",
     "mean_qrs_slope",
 ]
-
-EMOTION_LABELS = {
-    1: "neutral",
-    2: "stress",
-    4: "relaxed",
-}
-
 
 def save_feature_schema(path, columns):
     Path(path).write_text(json.dumps({"features": list(columns)}, indent=2), encoding="utf-8")
@@ -290,46 +271,6 @@ def rows_to_matrix(rows, columns):
     if not rows:
         return np.empty((0, len(columns)), dtype=float)
     return np.array([[row[col] for col in columns] for row in rows], dtype=float)
-
-
-def extract_emotion_feature_rows(
-    ecg_signal,
-    sample_rate_hz,
-    labels=None,
-    window_size=10,
-    step_size=None,
-    filter_signal=True,
-):
-    ecg = np.asarray(ecg_signal, dtype=float).flatten()
-    if filter_signal:
-        ecg = bandpass_filter(ecg, sample_rate_hz)
-
-    peaks = detect_r_peaks(ecg, sample_rate_hz)
-    rr_ms = rr_intervals_ms_from_peaks(peaks, sample_rate_hz)
-    if rr_ms.size < window_size:
-        return []
-
-    rr_labels = None
-    if labels is not None:
-        label_array = np.asarray(labels).flatten()
-        midpoint_idx = ((peaks[:-1] + peaks[1:]) // 2).astype(int)
-        valid_midpoints = midpoint_idx < label_array.size
-        rr_ms = rr_ms[valid_midpoints]
-        midpoint_idx = midpoint_idx[valid_midpoints]
-        rr_labels = label_array[midpoint_idx]
-
-    rows = []
-    for start, end in _window_indices(len(rr_ms), window_size, step_size):
-        row = extract_hrv_features(rr_ms[start:end])
-        if row is None:
-            continue
-        row["start_idx"] = start
-        row["end_idx"] = end
-        if rr_labels is not None:
-            values, counts = np.unique(rr_labels[start:end], return_counts=True)
-            row["label"] = int(values[np.argmax(counts)])
-        rows.append(row)
-    return rows
 
 
 def extract_anomaly_feature_rows(

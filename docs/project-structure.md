@@ -44,6 +44,6 @@ Primary rhythm labels:
 ## Current compatibility note
 
 Root `pipeline.py` still runs the current dashboard/API. It now loads existing
-emotion and legacy anomaly artifacts from `models/` instead of root files.
+stress, rhythm, ectopy, and legacy anomaly artifacts from `models/` instead of root files.
 The API also exposes `POST /personal-baseline/update-progressive` and
 `GET /personal-baseline/status` for 7-day patient-specific baseline operation.

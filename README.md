@@ -1,5 +1,5 @@
-Download and place in 'dataset' :
-- https://www.kaggle.com/datasets/orvile/wesad-wearable-stress-affect-detection-dataset/code?datasetId=7192727&sortBy=voteCount | rename 'WESAD'
+Download and place in local data folders:
+- https://www.kaggle.com/datasets/orvile/wesad-wearable-stress-affect-detection-dataset/code?datasetId=7192727&sortBy=voteCount | place as `data_raw/wesad`
 - https://www.kaggle.com/code/azazurrehmanbutt/ecg-classification-using-ml-dl | rename 'mitbih'
 
 External data folders not tracked by GitHub:
@@ -34,7 +34,7 @@ pip install -r requirements.txt
 Train models:
 
 ```bash
-python -m src.training.train_emotion_wesad
+python -m src.training.train_stress_wesad --wesad-root data_raw/wesad
 python -m src.training.train_anomaly_legacy
 python -m src.training.train_rhythm_features --dataset-dir data_processed/rhythm --model-dir models/rhythm
 python -m src.training.tune_rhythm_thresholds --dataset-dir data_processed/rhythm --model-dir models/rhythm --metrics-dir models/metrics --target-recall 0.90 --precision-floor 0.80 --apply
@@ -45,9 +45,12 @@ python -m src.training.train_ectopy_features --dataset-dir data_processed/mitdb_
 
 Generated artifacts:
 
-- `emotion_model.pkl`
-- `emotion_feature_schema.json`
-- `emotion_metrics.json`
+- `models/stress/rf_model.pkl`
+- `models/stress/svm_pipeline.pkl`
+- `models/stress/scaler_final.pkl`
+- `models/stress/model_metadata.json`
+- `models/stress/stress_feature_schema.json`
+- `models/metrics/stress_metrics.json`
 - `isolation_forest_model.pkl`
 - `anomaly_scaler.pkl`
 - `anomaly_feature_schema.json`
@@ -141,11 +144,13 @@ Example body:
 }
 ```
 
-Emotion labels:
+Stress labels:
 
-- `neutral`
+- `non_stress`
 - `stress`
-- `relaxed`
+- `unknown`
+
+Stress realtime inference uses a rolling RR buffer. The WESAD stress model is trained on 300-second windows with 60-second step, so `/ingest-ecg` returns `stress.label = "unknown"` with `reason = "warming_up_stress_window"` until enough reliable RR intervals have accumulated.
 
 Realtime predictions are also appended to:
 
@@ -156,8 +161,8 @@ dataset/realtime_logs/predictions.jsonl
 Realtime storage:
 
 - SQLite metadata: `dataset/realtime_logs/ecg_monitor.db`
-- Raw ECG windows: `dataset/realtime_logs/raw_ecg/<patient>/<session>/<prediction_id>.csv`
-- Raw ACC windows: `dataset/realtime_logs/raw_acc/<patient>/<session>/<prediction_id>.csv`
+- Raw ECG/ACC chunks: SQLite table `raw_signal_chunks` stores compressed BLOB chunks and links them to predictions/sessions.
+- Optional legacy raw CSV export: set `SAVE_LEGACY_RAW_CSV=1`.
 - Personal baseline JSON: `dataset/realtime_logs/personal_baseline/<patient>/personal_baseline.json`
 
 Progressive 7-day personal baseline:
@@ -209,7 +214,7 @@ MongoDB collections:
 - `risk_summaries`
 - `sync_runs`
 
-Raw ECG/ACC arrays are not pushed to MongoDB by default; MongoDB stores local raw file paths to keep sync lightweight.
+Raw ECG/ACC chunks can be synced to MongoDB by the storage sync endpoints/scheduler. Local chunks are purged only after successful sync and retention checks.
 
 Calibrate runtime sensor context from real Polar data:
 
@@ -226,8 +231,8 @@ This writes calibrated thresholds for:
 
 `src.api.pipeline` loads `models/runtime/sensor_context_config.json` automatically. Use `SENSOR_CONTEXT_CONFIG_PATH` to point to another config, or set `SENSOR_CONTEXT_CONFIG_DISABLED=1` to fall back to built-in defaults.
 
-After changing feature extraction, retrain the emotion model before relying on emotion predictions:
+After changing stress feature extraction, retrain the WESAD stress model before relying on stress predictions:
 
 ```bash
-python -m src.training.train_emotion_wesad
+python -m src.training.train_stress_wesad --wesad-root data_raw/wesad --skip-importance
 ```

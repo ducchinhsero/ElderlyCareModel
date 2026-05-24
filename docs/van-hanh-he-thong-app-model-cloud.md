@@ -6,7 +6,7 @@ Pham vi hien tai:
 
 - Thu ECG/ACC tu Polar H10.
 - Xu ly realtime qua FastAPI backend.
-- Chay cac model/rule: emotion, rhythm, PVC/PAC, anomaly legacy, signal quality, activity/fall, daily/long-term assessment.
+- Chay cac model/rule: stress, rhythm, PVC/PAC, anomaly legacy, signal quality, activity/fall, daily/long-term assessment.
 - Hieu chinh personal baseline luy tien toi da 7 ngay cho tung patient.
 - Luu du lieu vao SQLite va CSV raw ECG/ACC.
 - App Flutter hien thi output cho nguoi deo va nguoi giam sat.
@@ -22,7 +22,7 @@ flowchart TD
     B --> C["Feature extraction"]
     C --> D["Signal quality check"]
     D --> E["Realtime models/rules"]
-    E --> E1["Emotion model"]
+    E --> E1["Stress model"]
     E --> E2["Rhythm feature model"]
     E --> E3["PVC/PAC ectopy model"]
     E --> E4["Anomaly legacy model"]
@@ -393,7 +393,7 @@ Ket qua hien tai da kiem tra:
 
 - `health-report` khong phai chan doan benh.
 - `ectopy` hien la warning/suspicion, chua du manh de ket luan PVC/PAC y khoa.
-- `emotion` co metrics tot tren WESAD, nhung van can validation voi Polar thuc te.
+- `stress` co metrics tren WESAD, nhung van can validation voi Polar thuc te.
 - Cloud hien tai la tuy chon webhook/WebSocket/MongoDB sync, chua phai mot backend cloud hoan chinh co auth/user management.
 
 ## 12. De Xuat Buoc Tiep Theo
