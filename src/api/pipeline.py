@@ -76,6 +76,7 @@ from src.storage.background_sync import (
     stop_background_sync_scheduler,
 )
 from src.storage.mongodb_sync import is_mongodb_configured, sync_to_mongodb
+from src.services import mqtt_publisher
 from src.inference.af_episode_tracker import AFEpisodeTracker
 from src.inference.alert_engine import map_rhythm_to_alert
 from src.inference.ectopy_inference import EctopyFeaturePredictor
@@ -465,7 +466,27 @@ def record_result(
     _persist_result(result)
     _broadcast_result(result)
     _push_alert_webhook(result)
+    # MQTT publish — non-blocking, fire-and-forget. Separate from WebSocket
+    # because MQTT survives app being killed (broker retains the last alert),
+    # and from webhook because MQTT brokers handle reconnect/queueing.
+    _publish_mqtt(result)
     return result
+
+
+def _publish_mqtt(result):
+    """Push to local MQTT broker (alert + live vitals). Never raises."""
+    if not result or not mqtt_publisher.is_enabled():
+        return
+    try:
+        mqtt_publisher.publish_vitals(result)
+    except Exception as exc:  # noqa: BLE001
+        # Never let MQTT failure poison the pipeline.
+        print(f"MQTT publish_vitals error (non-fatal): {exc}")
+    try:
+        events = build_events_for_prediction(result)
+        mqtt_publisher.publish_alert(result, events=events)
+    except Exception as exc:  # noqa: BLE001
+        print(f"MQTT publish_alert error (non-fatal): {exc}")
 
 
 try:
@@ -1223,6 +1244,10 @@ if FastAPI is not None:
 
     @app.on_event("startup")
     async def startup_background_sync():
+        # Warm up MQTT connection on boot so the first prediction doesn't pay
+        # the connect latency. Non-blocking — paho dials in a thread.
+        if mqtt_publisher.is_enabled():
+            mqtt_publisher.publish_status({"boot": True})
         config = BackgroundSyncConfig.from_env()
         if config.enabled:
             await start_background_sync_scheduler(config)
@@ -1230,6 +1255,12 @@ if FastAPI is not None:
     @app.on_event("shutdown")
     async def shutdown_background_sync():
         await stop_background_sync_scheduler()
+        # Publish graceful 'offline' marker before tearing down the client,
+        # so subscribers see a clean goodbye instead of LWT timeout.
+        try:
+            mqtt_publisher.shutdown()
+        except Exception as exc:  # noqa: BLE001
+            print(f"MQTT shutdown error (non-fatal): {exc}")
 
     DASHBOARD_HTML = """
 <!doctype html>
@@ -1926,6 +1957,10 @@ if FastAPI is not None:
             "mongodb_sync_scheduler": get_background_sync_status(),
             "alert_webhook_configured": bool(ALERT_WEBHOOK_URL),
             "alert_webhook_levels": sorted(ALERT_WEBHOOK_LEVELS),
+            "mqtt_enabled": mqtt_publisher.is_enabled(),
+            "mqtt_connected": mqtt_publisher.is_connected(),
+            "mqtt_host": f"{os.getenv('MQTT_HOST', 'localhost')}:{os.getenv('MQTT_PORT', '1883')}",
+            "mqtt_topic_prefix": os.getenv("MQTT_TOPIC_PREFIX", "elderly_care"),
             "polar": polar_status,
         }
 

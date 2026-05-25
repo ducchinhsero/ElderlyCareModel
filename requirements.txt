@@ -14,3 +14,4 @@ torch
 httpx
 neurokit2
 astropy
+paho-mqtt
