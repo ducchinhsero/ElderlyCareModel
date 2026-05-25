@@ -1,0 +1,36 @@
+{
+  "model_version": "soft_voting_rf_svm_wesad",
+  "model_type": "soft_voting(RF + SVM_pipeline)",
+  "feature_names": [
+    "mean_rr",
+    "sdnn",
+    "rmssd",
+    "pnn50",
+    "lf_power",
+    "hf_power",
+    "lf_hf_ratio",
+    "lf_nu",
+    "hf_nu",
+    "sd1",
+    "sd2",
+    "sd1_sd2_ratio"
+  ],
+  "classes": {
+    "0": "non_stress",
+    "1": "stress"
+  },
+  "window_size_sec": 300.0,
+  "step_size_sec": 60.0,
+  "sample_rate_hz": 700.0,
+  "loso_accuracy_mean": 0.8127430929525851,
+  "loso_f1_macro_mean": 0.7741843453118787,
+  "loso_f1_stress_mean": 0.6586058008039433,
+  "dataset_shape": [
+    412,
+    12
+  ],
+  "label_distribution": {
+    "non_stress": 286,
+    "stress": 126
+  }
+}

@@ -1,9 +1,11 @@
 import csv
 import hashlib
 import json
+import logging
 import os
 import sqlite3
 import struct
+import threading
 import uuid
 import zlib
 from datetime import datetime, timedelta, timezone
@@ -14,13 +16,35 @@ from src.config.env_loader import load_env_file
 
 load_env_file()
 
-DB_PATH = "dataset/realtime_logs/ecg_monitor.db"
-RAW_ECG_ROOT = "dataset/realtime_logs/raw_ecg"
-RAW_ACC_ROOT = "dataset/realtime_logs/raw_acc"
+_logger = logging.getLogger("elderly_care.ecg_storage")
+
+
+def _resolve_storage_root():
+    """Resolve absolute storage root from env or project root.
+
+    Priority: ECG_DATA_DIR env > <project_root>/dataset/realtime_logs.
+    project_root is inferred from this file's location (src/storage/ -> ../../).
+    """
+    env_root = os.getenv("ECG_DATA_DIR")
+    if env_root:
+        return Path(env_root).expanduser().resolve()
+    return (Path(__file__).resolve().parents[2] / "dataset" / "realtime_logs").resolve()
+
+
+_STORAGE_ROOT = _resolve_storage_root()
+DB_PATH = str(_STORAGE_ROOT / "ecg_monitor.db")
+RAW_ECG_ROOT = str(_STORAGE_ROOT / "raw_ecg")
+RAW_ACC_ROOT = str(_STORAGE_ROOT / "raw_acc")
 DEFAULT_RAW_CHUNK_SECONDS = 5
 ECG_CHUNK_ENCODING = "int32_le_zlib"
 ACC_CHUNK_ENCODING = "float32x4_le_zlib"
 SAVE_LEGACY_RAW_CSV = os.getenv("SAVE_LEGACY_RAW_CSV", "0").strip().lower() in {"1", "true", "yes"}
+
+# Per-DB initialization guard. init_db() runs heavy DDL + a one-time backfill;
+# guard against running it on every get_connection() call (was a hot-path
+# bottleneck — full table scan per request).
+_INIT_LOCK = threading.Lock()
+_INITIALIZED_DBS = set()
 
 
 def utc_now_iso():
@@ -57,11 +81,62 @@ def _positive_int(value, name):
 
 
 def get_connection(db_path=DB_PATH):
+    """Open a SQLite connection tuned for 24/7 concurrent BLE write + sync read.
+
+    PRAGMAs applied on every connection (WAL is per-DB but cheap to re-assert;
+    busy_timeout and cache_size are per-connection and MUST be set every time):
+      - journal_mode=WAL: writer doesn't lock readers (critical for Pi).
+      - synchronous=NORMAL: WAL-safe, much faster than FULL on SD card.
+      - busy_timeout=30000: wait up to 30s on a lock instead of throwing.
+      - temp_store=MEMORY: avoid SD card thrash for sort/agg temp tables.
+      - cache_size=-20000: ~20MB cache (negative = KB).
+      - wal_autocheckpoint=1000: keep WAL file from growing unbounded.
+      - foreign_keys=ON: enforce relational integrity.
+
+    init_db() is guarded so the heavy DDL + backfill runs only once per
+    db_path per process.
+    """
     os.makedirs(os.path.dirname(db_path), exist_ok=True)
-    conn = sqlite3.connect(db_path)
+    conn = sqlite3.connect(db_path, timeout=30.0, isolation_level="DEFERRED")
     conn.row_factory = sqlite3.Row
-    init_db(conn)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA synchronous=NORMAL")
+    conn.execute("PRAGMA busy_timeout=30000")
+    conn.execute("PRAGMA temp_store=MEMORY")
+    conn.execute("PRAGMA cache_size=-20000")
+    conn.execute("PRAGMA wal_autocheckpoint=1000")
+    conn.execute("PRAGMA foreign_keys=ON")
+    with _INIT_LOCK:
+        if db_path not in _INITIALIZED_DBS:
+            init_db(conn)
+            _INITIALIZED_DBS.add(db_path)
     return conn
+
+
+def reset_init_cache():
+    """Test/maintenance helper: forget that a db has been initialized.
+
+    Useful for unit tests that delete the DB between cases.
+    """
+    with _INIT_LOCK:
+        _INITIALIZED_DBS.clear()
+
+
+def integrity_check(db_path=DB_PATH):
+    """Run PRAGMA integrity_check; return 'ok' or a list of issues.
+
+    Call this from a cron job (eg daily 03:00) to detect SD-card corruption
+    early. On Pi with sudden power loss this is the canonical recovery probe.
+    """
+    conn = sqlite3.connect(db_path, timeout=30.0)
+    try:
+        rows = conn.execute("PRAGMA integrity_check").fetchall()
+        results = [row[0] for row in rows]
+        if results == ["ok"]:
+            return {"status": "ok", "details": results}
+        return {"status": "corrupt", "details": results}
+    finally:
+        conn.close()
 
 
 def init_db(conn):

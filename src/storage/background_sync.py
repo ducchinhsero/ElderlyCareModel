@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import os
+import threading
 import time
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
@@ -17,9 +18,17 @@ load_env_file()
 
 DEFAULT_SYNC_LOG_PATH = "logs/background_sync.log"
 DEFAULT_SYNC_RUN_LOG_PATH = "logs/background_sync_runs.jsonl"
+# purge_synced_raw_chunks with retention_hours=0 would wipe every just-synced
+# chunk immediately, leaving zero replay window if MongoDB needs to be re-seeded.
+# Anything below this floor gets clamped up + a warning is logged.
+MIN_PURGE_RETENTION_HOURS = 1.0
 
 _scheduler_task = None
 _scheduler_config = None
+# Lock guards _scheduler_state because run_background_sync_once executes in
+# asyncio.to_thread (worker thread) while the /storage/sync-scheduler/status
+# endpoint reads state from the event-loop thread.
+_state_lock = threading.Lock()
 _scheduler_state = {
     "running": False,
     "started_at": None,
@@ -29,6 +38,18 @@ _scheduler_state = {
     "last_result": None,
     "last_error": None,
 }
+
+
+def _set_state(**kwargs):
+    """Thread-safe partial update of _scheduler_state."""
+    with _state_lock:
+        _scheduler_state.update(kwargs)
+
+
+def _get_state_snapshot():
+    """Thread-safe shallow copy for read-only callers."""
+    with _state_lock:
+        return dict(_scheduler_state)
 
 
 def utc_now_iso():
@@ -77,11 +98,21 @@ class BackgroundSyncConfig:
         self.interval_seconds = _positive_float(self.interval_seconds, "interval_seconds")
         self.days = _positive_float(self.days, "days")
         self.limit = _positive_int(self.limit, "limit")
-        self.purge_retention_hours = _positive_float(
+        # Clamp retention to a safe minimum; 0 would purge fresh data the moment
+        # it leaves the device, killing our replay-on-Mongo-loss fallback.
+        raw_retention = _positive_float(
             self.purge_retention_hours,
             "purge_retention_hours",
             allow_zero=True,
         )
+        if raw_retention < MIN_PURGE_RETENTION_HOURS:
+            logging.getLogger("elderly_care.background_sync").warning(
+                "purge_retention_hours=%s is below minimum %s; clamping up.",
+                raw_retention,
+                MIN_PURGE_RETENTION_HOURS,
+            )
+            raw_retention = MIN_PURGE_RETENTION_HOURS
+        self.purge_retention_hours = raw_retention
         self.purge_limit = _positive_int(self.purge_limit, "purge_limit")
         if self.patient_id == "":
             self.patient_id = None
@@ -119,7 +150,8 @@ def get_background_sync_logger(log_path=DEFAULT_SYNC_LOG_PATH):
     for handler in list(logger.handlers):
         logger.removeHandler(handler)
         handler.close()
-    handler = RotatingFileHandler(resolved, maxBytes=2_000_000, backupCount=5, encoding="utf-8")
+    # 5MB × 10 backups = ~50MB cap, enough for several months of 5-min cycles.
+    handler = RotatingFileHandler(resolved, maxBytes=5_000_000, backupCount=10, encoding="utf-8")
     handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
     logger.addHandler(handler)
     return logger
@@ -216,35 +248,39 @@ def run_background_sync_once(
 
 
 async def _scheduler_loop(config):
-    global _scheduler_state
     logger = get_background_sync_logger(config.log_path)
-    _scheduler_state.update(
-        {
-            "running": True,
-            "started_at": utc_now_iso(),
-            "stopped_at": None,
-            "cycle_count": 0,
-            "last_error": None,
-            "config": asdict(config),
-        }
+    _set_state(
+        running=True,
+        started_at=utc_now_iso(),
+        stopped_at=None,
+        cycle_count=0,
+        last_error=None,
+        config=asdict(config),
     )
     logger.info("Background MongoDB sync scheduler started.")
     try:
         if not config.run_immediately:
             await asyncio.sleep(config.interval_seconds)
         while True:
+            cycle_started = time.time()
             result = await asyncio.to_thread(run_background_sync_once, config)
-            _scheduler_state["cycle_count"] = int(_scheduler_state.get("cycle_count") or 0) + 1
-            _scheduler_state["last_run_at"] = utc_now_iso()
-            _scheduler_state["last_result"] = result
-            _scheduler_state["last_error"] = result.get("error")
-            await asyncio.sleep(config.interval_seconds)
+            with _state_lock:
+                _scheduler_state["cycle_count"] = int(
+                    _scheduler_state.get("cycle_count") or 0
+                ) + 1
+                _scheduler_state["last_run_at"] = utc_now_iso()
+                _scheduler_state["last_result"] = result
+                _scheduler_state["last_error"] = result.get("error")
+            # Subtract cycle duration so we sleep TO the next slot rather than
+            # ADDING duration on top (otherwise long cycles slowly drift the
+            # schedule). Floor at 5s so we never tight-loop on a fast cycle.
+            elapsed = time.time() - cycle_started
+            await asyncio.sleep(max(5.0, config.interval_seconds - elapsed))
     except asyncio.CancelledError:
         logger.info("Background MongoDB sync scheduler stopped.")
         raise
     finally:
-        _scheduler_state["running"] = False
-        _scheduler_state["stopped_at"] = utc_now_iso()
+        _set_state(running=False, stopped_at=utc_now_iso())
 
 
 async def start_background_sync_scheduler(config=None):
@@ -271,7 +307,7 @@ async def stop_background_sync_scheduler():
 
 def get_background_sync_status():
     config = _scheduler_config or BackgroundSyncConfig.from_env()
-    status = dict(_scheduler_state)
+    status = _get_state_snapshot()
     status["task_active"] = bool(_scheduler_task is not None and not _scheduler_task.done())
     status["configured"] = is_mongodb_configured()
     status["config"] = asdict(config)

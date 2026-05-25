@@ -207,7 +207,14 @@ HR_UUID = "00002a37-0000-1000-8000-00805f9b34fb"
 PMD_CONTROL = "fb005c81-02e7-f387-1cad-8acd2d8df0c8"
 PMD_DATA = "fb005c82-02e7-f387-1cad-8acd2d8df0c8"
 POLAR_DEVICE_NAME = "Polar H10"
-DEFAULT_POLAR_ADDRESS = "24:AC:AC:13:EB:86"
+# Default Polar H10 MAC. The /polar/start endpoint uses this when the caller
+# does not supply an explicit `address`. Override per-device by setting
+# POLAR_H10_MAC in .env (preferred for multi-Pi deployments).
+DEFAULT_POLAR_ADDRESS = (
+    os.getenv("POLAR_H10_MAC")
+    or os.getenv("POLAR_ADDRESS")
+    or "24:AC:AC:13:EB:86"
+)
 TYPE_ECG = 0x00
 # Polar H10 PMD command for ECG at 130 Hz. This command is verified by the
 # standalone collector in D:\DATN\PolarH10\only_ecg.py.
@@ -1014,9 +1021,20 @@ async def bluetooth_prediction_stream(address, chunk_seconds=30):
     if BleakClient is None:
         raise RuntimeError("bleak is not installed. Install it to use Polar H10 collection.")
 
-    collected_rr = []
-    collected_ecg = []
-    collected_acc = []
+    # Cap collected buffers at ~3x the steady-state size for this chunk window.
+    # If predict_ecg or SQLite write blocks longer than chunk_seconds (eg DB
+    # locked, MongoDB sync running), the BLE callback keeps appending. Without
+    # a cap, we'd OOM the Pi after a few stalls. deque.append() silently drops
+    # the oldest sample once maxlen is hit — losing some samples is preferable
+    # to crashing the process.
+    from collections import deque
+
+    ecg_buffer_cap = max(int(REALTIME_SAMPLE_RATE_HZ * chunk_seconds * 3), 4000)
+    acc_buffer_cap = max(int(FS_ACC_HZ * chunk_seconds * 3), 1000)
+    rr_buffer_cap = 2000  # ~10 min of RR @ 60bpm, defensive
+    collected_rr = deque(maxlen=rr_buffer_cap)
+    collected_ecg = deque(maxlen=ecg_buffer_cap)
+    collected_acc = deque(maxlen=acc_buffer_cap)
     pmd_packets_seen = 0
     pmd_ecg_packets_seen = 0
     pmd_acc_packets_seen = 0

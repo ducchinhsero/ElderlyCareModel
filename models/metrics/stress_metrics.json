@@ -1,0 +1,196 @@
+{
+  "model": "soft_voting_rf_svm_wesad",
+  "sample_rate_hz": 700.0,
+  "window_size_sec": 300.0,
+  "step_size_sec": 60.0,
+  "feature_names": [
+    "mean_rr",
+    "sdnn",
+    "rmssd",
+    "pnn50",
+    "lf_power",
+    "hf_power",
+    "lf_hf_ratio",
+    "lf_nu",
+    "hf_nu",
+    "sd1",
+    "sd2",
+    "sd1_sd2_ratio"
+  ],
+  "classes": {
+    "0": "non_stress",
+    "1": "stress"
+  },
+  "dataset_shape": [
+    412,
+    12
+  ],
+  "label_distribution": {
+    "non_stress": 286,
+    "stress": 126
+  },
+  "subject_count": 15,
+  "loso_accuracy_mean": 0.8127430929525851,
+  "loso_f1_macro_mean": 0.7741843453118787,
+  "loso_f1_stress_mean": 0.6586058008039433,
+  "classification_report": {
+    "non_stress": {
+      "precision": 0.9015151515151515,
+      "recall": 0.8321678321678322,
+      "f1-score": 0.8654545454545455,
+      "support": 286.0
+    },
+    "stress": {
+      "precision": 0.6756756756756757,
+      "recall": 0.7936507936507936,
+      "f1-score": 0.7299270072992701,
+      "support": 126.0
+    },
+    "accuracy": 0.8203883495145631,
+    "macro avg": {
+      "precision": 0.7885954135954136,
+      "recall": 0.8129093129093129,
+      "f1-score": 0.7976907763769078,
+      "support": 412.0
+    },
+    "weighted avg": {
+      "precision": 0.8324477390011371,
+      "recall": 0.8203883495145631,
+      "f1-score": 0.8240068032031748,
+      "support": 412.0
+    }
+  },
+  "confusion_matrix": [
+    [
+      238,
+      48
+    ],
+    [
+      26,
+      100
+    ]
+  ],
+  "fold_metrics": [
+    {
+      "fold": 1,
+      "test_subject": "S10",
+      "accuracy": 0.375,
+      "f1_macro": 0.2727272727272727,
+      "f1_stress": 0.5454545454545454,
+      "support": 32
+    },
+    {
+      "fold": 2,
+      "test_subject": "S11",
+      "accuracy": 0.26666666666666666,
+      "f1_macro": 0.21052631578947367,
+      "f1_stress": 0.0,
+      "support": 15
+    },
+    {
+      "fold": 3,
+      "test_subject": "S13",
+      "accuracy": 0.7333333333333333,
+      "f1_macro": 0.7285067873303167,
+      "f1_stress": 0.6923076923076923,
+      "support": 30
+    },
+    {
+      "fold": 4,
+      "test_subject": "S14",
+      "accuracy": 1.0,
+      "f1_macro": 1.0,
+      "f1_stress": 1.0,
+      "support": 25
+    },
+    {
+      "fold": 5,
+      "test_subject": "S15",
+      "accuracy": 0.9354838709677419,
+      "f1_macro": 0.9295454545454545,
+      "f1_stress": 0.9090909090909091,
+      "support": 31
+    },
+    {
+      "fold": 6,
+      "test_subject": "S16",
+      "accuracy": 1.0,
+      "f1_macro": 1.0,
+      "f1_stress": 0.0,
+      "support": 15
+    },
+    {
+      "fold": 7,
+      "test_subject": "S17",
+      "accuracy": 0.8064516129032258,
+      "f1_macro": 0.8012820512820513,
+      "f1_stress": 0.7692307692307693,
+      "support": 31
+    },
+    {
+      "fold": 8,
+      "test_subject": "S2",
+      "accuracy": 0.8928571428571429,
+      "f1_macro": 0.8805120910384068,
+      "f1_stress": 0.8421052631578947,
+      "support": 28
+    },
+    {
+      "fold": 9,
+      "test_subject": "S3",
+      "accuracy": 0.9629629629629629,
+      "f1_macro": 0.9538461538461538,
+      "f1_stress": 0.9333333333333333,
+      "support": 27
+    },
+    {
+      "fold": 10,
+      "test_subject": "S4",
+      "accuracy": 0.8620689655172413,
+      "f1_macro": 0.8273809523809523,
+      "f1_stress": 0.75,
+      "support": 29
+    },
+    {
+      "fold": 11,
+      "test_subject": "S5",
+      "accuracy": 0.6896551724137931,
+      "f1_macro": 0.40816326530612246,
+      "f1_stress": 0.0,
+      "support": 29
+    },
+    {
+      "fold": 12,
+      "test_subject": "S6",
+      "accuracy": 1.0,
+      "f1_macro": 1.0,
+      "f1_stress": 1.0,
+      "support": 30
+    },
+    {
+      "fold": 13,
+      "test_subject": "S7",
+      "accuracy": 0.9,
+      "f1_macro": 0.8768809849521204,
+      "f1_stress": 0.8235294117647058,
+      "support": 30
+    },
+    {
+      "fold": 14,
+      "test_subject": "S8",
+      "accuracy": 0.9666666666666667,
+      "f1_macro": 0.9614890885750962,
+      "f1_stress": 0.9473684210526315,
+      "support": 30
+    },
+    {
+      "fold": 15,
+      "test_subject": "S9",
+      "accuracy": 0.8,
+      "f1_macro": 0.7619047619047619,
+      "f1_stress": 0.6666666666666666,
+      "support": 30
+    }
+  ],
+  "mean_prediction_confidence": 0.8434527620260575
+}
