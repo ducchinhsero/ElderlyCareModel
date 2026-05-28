@@ -10,6 +10,7 @@ from src.features.ecg_features import (
 )
 from src.features.stress_features import STRESS_FEATURE_COLUMNS, extract_stress_features, stress_row_to_matrix
 from src.calibration.anomaly_calibration import MIN_BASELINE_FEATURE_ROWS
+from src.api import pipeline
 from src.api.pipeline import predict_ecg
 
 
@@ -77,6 +78,10 @@ class ECGFeatureTests(unittest.TestCase):
         self.assertIn("stress", result)
         self.assertNotIn("emotion", result)
         self.assertEqual(result["sensor_context"]["activity_state"], "REST")
+
+    def test_realtime_pipeline_does_not_load_cnn_runtime(self):
+        self.assertFalse(hasattr(pipeline, "rhythm_cnn_predictor"))
+        self.assertFalse(hasattr(pipeline, "RHYTHM_PREDICTOR_MODE"))
 
 
 if __name__ == "__main__":

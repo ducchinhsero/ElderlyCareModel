@@ -364,6 +364,35 @@ uvicorn src.api.pipeline:app --host 0.0.0.0 --port 8000
 
 5. Khong nen expose truc tiep API len internet ma khong co HTTPS/authentication.
 
+### 9.1. Bao ve API truoc khi mo ngoai LAN
+
+Khuyen nghi demo/caregiver remote: dung VPN/Tailscale truoc, khong public truc tiep port 8000.
+
+Neu bat buoc expose API, bat API key trong `.env`:
+
+```env
+API_AUTH_ENABLED=1
+API_KEY=<secret>
+API_PUBLIC_PATHS=/health,/dashboard
+ALLOWED_ORIGINS=https://your-app-domain.example
+```
+
+Client phai gui header:
+
+```http
+X-API-Key: <secret>
+```
+
+Endpoint can bao ve bat buoc:
+
+- `/polar/start`, `/polar/stop`
+- `/storage/*`
+- `/events/rebuild`
+- `/personal-baseline/*`
+- `/guided-baseline/*`
+
+Khong commit `.env`, MongoDB URI, MQTT password, API key.
+
 ## 10. Kiem Thu Sau Moi Lan Sua
 
 Backend:

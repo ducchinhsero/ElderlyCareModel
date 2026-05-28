@@ -57,9 +57,9 @@ Dừng scheduler:
 curl -X POST http://127.0.0.1:8000/storage/sync-scheduler/stop
 ```
 
-## 2. Soak Test
+## 2. Soak Test Synthetic
 
-Soak test là kiểm thử chạy lâu để xem hệ thống có ổn định không. Script sẽ gửi ECG/ACC giả lập vào `/ingest-ecg`, kiểm tra storage, có thể gọi sync định kỳ và ghi log JSONL.
+Soak test synthetic là kiểm thử chạy lâu bằng ECG/ACC giả lập. Script sẽ gửi dữ liệu vào `/ingest-ecg`, kiểm tra storage, có thể gọi sync định kỳ và ghi log JSONL. Test này dùng để kiểm tra API/storage, không thay thế test Polar H10 thật.
 
 ### Chạy API
 
@@ -96,7 +96,134 @@ Mỗi dòng là một JSON record gồm:
 - storage status;
 - kết quả sync nếu có.
 
-## 3. Kiểm tra mất mạng và sync bù
+## 3. Soak Test Polar H10 thật trên Raspberry 24 giờ
+
+Với test thật, không gửi ECG giả lập. Backend phải đang chạy trên Pi và Polar collector phải được start.
+
+### Chuẩn bị
+
+```bash
+uvicorn pipeline:app --host 0.0.0.0 --port 8000 --app-dir .
+```
+
+Start Polar:
+
+```bash
+curl -X POST http://127.0.0.1:8000/polar/start
+```
+
+Kiểm tra:
+
+```bash
+curl http://127.0.0.1:8000/health
+curl http://127.0.0.1:8000/latest-result
+curl http://127.0.0.1:8000/storage/status
+```
+
+### Chạy monitor 24 giờ
+
+Chạy trên Pi hoặc một máy trong cùng LAN:
+
+```bash
+python -m src.services.pi_runtime_monitor \
+  --base-url http://127.0.0.1:8000 \
+  --patient-id polar_h10 \
+  --duration-hours 24 \
+  --interval-seconds 60 \
+  --output logs/pi_soak_24h.jsonl
+```
+
+Nếu API auth đã bật:
+
+```bash
+python -m src.services.pi_runtime_monitor \
+  --base-url http://127.0.0.1:8000 \
+  --patient-id polar_h10 \
+  --duration-hours 24 \
+  --interval-seconds 60 \
+  --api-key "$API_KEY" \
+  --output logs/pi_soak_24h.jsonl
+```
+
+Monitor ghi:
+
+- `/health`: model status, MQTT, Polar reconnect counters.
+- `/latest-result`: prediction mới nhất.
+- `/storage/status`: prediction count, DB/WAL size, raw chunks chưa sync.
+- `/storage/sync-scheduler/status`: trạng thái sync nền.
+- `/events`: event timeline gần nhất.
+- CPU/RAM nếu có `psutil`.
+
+### Review alert sai
+
+Máy không thể tự biết alert đúng/sai nếu không có nhãn thật. Sau khi chạy 24 giờ, tạo file review thủ công nếu cần:
+
+```csv
+timestamp,event_type,severity,is_false_alert,note
+2026-05-28T10:30:00+07:00,fall_candidate,high,true,Nguoi dung dang van dong manh
+```
+
+Lưu tại:
+
+```text
+logs/alert_review.csv
+```
+
+### Xuất report
+
+```bash
+python -m src.services.build_soak_report \
+  --input logs/pi_soak_24h.jsonl \
+  --alert-review logs/alert_review.csv \
+  --summary-output logs/pi_soak_24h_summary.json \
+  --report-output logs/pi_soak_24h_report.md
+```
+
+Report gồm:
+
+- số prediction tăng thêm;
+- số reconnect;
+- max prediction gap;
+- CPU/RAM min/avg/max;
+- DB size đầu/cuối;
+- số raw chunks chưa sync;
+- MongoDB sync status;
+- alert count theo loại;
+- false alert count nếu đã review.
+
+## 4. Kiểm tra MQTT với app/caregiver thật
+
+Cài broker trên Pi:
+
+```bash
+sudo apt install -y mosquitto mosquitto-clients
+sudo systemctl enable --now mosquitto
+```
+
+`.env` tối thiểu:
+
+```env
+MQTT_ENABLED=1
+MQTT_HOST=localhost
+MQTT_PORT=1883
+MQTT_TOPIC_PREFIX=elderly_care
+MQTT_ALERT_MIN_LEVEL=medium
+```
+
+Theo dõi topic:
+
+```bash
+mosquitto_sub -h localhost -t "elderly_care/#" -v
+```
+
+Cần kiểm tra với app/caregiver:
+
+- nhận `elderly_care/<patient_id>/vitals/live`;
+- nhận `elderly_care/<patient_id>/alert`;
+- mở lại app vẫn thấy retained latest alert;
+- khi Pi/backend mất kết nối, app thấy `elderly_care/service/status` offline.
+
+## 5. Kiểm tra mất mạng và sync bù
 
 Quy trình test:
 
@@ -107,15 +234,18 @@ Quy trình test:
 5. Gọi `/storage/sync-scheduler/run-once` hoặc chờ scheduler tự chạy.
 6. Kiểm tra MongoDB có thêm document và local raw chunk đã sync được purge theo chính sách.
 
-## 4. Tiêu chí pass cho chạy dài hạn
+## 6. Tiêu chí pass cho chạy dài hạn
 
-Hệ thống được xem là ổn định sơ bộ nếu sau vài giờ:
+Hệ thống được xem là ổn định sơ bộ nếu sau 24 giờ:
 
 - API không crash;
 - dashboard vẫn cập nhật;
+- `logs/pi_soak_24h_report.md` được tạo thành công;
+- RAM process không tăng liên tục;
+- reconnect count thấp hoặc có hồi phục rõ ràng;
 - `logs/background_sync.log` không có lỗi lặp liên tục;
 - `logs/background_sync_runs.jsonl` có `status: ok` sau khi mạng ổn định;
 - raw chunk chưa sync không tăng vô hạn khi mạng đã hoạt động;
 - purge không xóa chunk chưa sync;
+- MQTT app/caregiver nhận được alert retained;
 - `/storage/status` vẫn trả JSON bình thường.
-

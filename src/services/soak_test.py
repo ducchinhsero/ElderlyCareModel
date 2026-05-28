@@ -88,12 +88,15 @@ def build_ingest_payload(
     return payload
 
 
-def post_json(url, payload, timeout_seconds=30):
+def post_json(url, payload, timeout_seconds=30, api_key=None):
     data = json.dumps(payload).encode("utf-8")
+    headers = {"Content-Type": "application/json"}
+    if api_key:
+        headers["X-API-Key"] = api_key
     request = urllib.request.Request(
         url,
         data=data,
-        headers={"Content-Type": "application/json"},
+        headers=headers,
         method="POST",
     )
     with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
@@ -101,8 +104,12 @@ def post_json(url, payload, timeout_seconds=30):
         return response.status, json.loads(body) if body else {}
 
 
-def get_json(url, timeout_seconds=30):
-    with urllib.request.urlopen(url, timeout=timeout_seconds) as response:
+def get_json(url, timeout_seconds=30, api_key=None):
+    headers = {}
+    if api_key:
+        headers["X-API-Key"] = api_key
+    request = urllib.request.Request(url, headers=headers, method="GET")
+    with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
         body = response.read().decode("utf-8")
         return response.status, json.loads(body) if body else {}
 
@@ -163,12 +170,21 @@ def run_soak_test(args):
                 include_acc=not args.no_acc,
                 seed=iteration,
             )
-            status, response = post_json(f"{base_url}/ingest-ecg", payload, timeout_seconds=args.timeout_seconds)
+            status, response = post_json(
+                f"{base_url}/ingest-ecg",
+                payload,
+                timeout_seconds=args.timeout_seconds,
+                api_key=args.api_key,
+            )
             event["ingest_status"] = status
             event["ingest"] = summarize_ingest_response(response)
 
             if args.check_storage:
-                storage_status_code, storage = get_json(f"{base_url}/storage/status", timeout_seconds=args.timeout_seconds)
+                storage_status_code, storage = get_json(
+                    f"{base_url}/storage/status",
+                    timeout_seconds=args.timeout_seconds,
+                    api_key=args.api_key,
+                )
                 event["storage_status"] = storage_status_code
                 event["storage"] = {
                     "counts": storage.get("counts"),
@@ -188,6 +204,7 @@ def run_soak_test(args):
                     f"{base_url}/storage/sync-scheduler/run-once",
                     sync_payload,
                     timeout_seconds=max(args.timeout_seconds, 60),
+                    api_key=args.api_key,
                 )
                 event["sync_status"] = sync_status
                 event["sync"] = sync_response
@@ -228,6 +245,7 @@ def parse_args():
     parser.add_argument("--purge-after-sync", action="store_true")
     parser.add_argument("--purge-retention-hours", type=float, default=24)
     parser.add_argument("--timeout-seconds", type=float, default=30)
+    parser.add_argument("--api-key", default="")
     parser.add_argument("--log-path", default=DEFAULT_LOG_PATH)
     return parser.parse_args()
 

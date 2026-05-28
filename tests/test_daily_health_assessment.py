@@ -94,7 +94,8 @@ class DailyHealthAssessmentTest(unittest.TestCase):
         result = build_daily_health_assessment(history, events, patient_id="test_patient")
         findings = {item["type"]: item for item in result["findings"]}
         self.assertIn("ectopy_activity", findings)
-        self.assertEqual(findings["ectopy_activity"]["level"], "high")
+        self.assertEqual(findings["ectopy_activity"]["level"], "medium")
+        self.assertEqual(findings["ectopy_activity"]["evidence"]["assessment_role"], "secondary_signal")
 
     def test_poor_signal_ratio_produces_signal_finding(self):
         history = [_prediction(signal_quality="poor") for _ in range(20)]

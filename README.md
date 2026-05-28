@@ -1,6 +1,3 @@
-Download and place in local data folders:
-- https://www.kaggle.com/datasets/orvile/wesad-wearable-stress-affect-detection-dataset/code?datasetId=7192727&sortBy=voteCount | place as `data_raw/wesad`
-- https://www.kaggle.com/code/azazurrehmanbutt/ecg-classification-using-ml-dl | rename 'mitbih'
 
 External data folders not tracked by GitHub:
 
@@ -25,10 +22,21 @@ Notes:
 - `data_raw/`: original large public datasets such as WESAD, CinC 2017, AFDB, MITDB, NSTDB. GitHub only keeps `.gitkeep` placeholders.
 - Do not commit these folders unless the team explicitly decides to use Git LFS or a separate private data repository.
 
+System documentation:
+
+- `docs/model-storage-alert-system.md`: model choice, storage flow, alert flow.
+- `docs/so-sanh-rhythm-cnn-feature-model.md`: detailed CNN vs feature rhythm comparison.
+
 Install dependencies:
 
 ```bash
 pip install -r requirements.txt
+```
+
+Optional research dependencies for CNN rhythm experiments:
+
+```bash
+pip install -r requirements-research.txt
 ```
 
 Train models:
@@ -38,9 +46,14 @@ python -m src.training.train_stress_wesad --wesad-root data_raw/wesad
 python -m src.training.train_anomaly_legacy
 python -m src.training.train_rhythm_features --dataset-dir data_processed/rhythm --model-dir models/rhythm
 python -m src.training.tune_rhythm_thresholds --dataset-dir data_processed/rhythm --model-dir models/rhythm --metrics-dir models/metrics --target-recall 0.90 --precision-floor 0.80 --apply
-python -m src.training.train_rhythm_cnn --dataset-dir data_processed/rhythm --model-dir models/rhythm --metrics-dir models/metrics --epochs 25 --batch-size 128
 python -m src.dataset_builders.build_mitdb_ectopy --input-dir data_raw/mitdb --output-dir data_processed/mitdb_ectopy
 python -m src.training.train_ectopy_features --dataset-dir data_processed/mitdb_ectopy --model-dir models/ectopy --metrics-dir models/metrics
+```
+
+Research-only CNN comparison:
+
+```bash
+python -m src.training.train_rhythm_cnn --dataset-dir data_processed/rhythm --model-dir models/research/rhythm_cnn --metrics-dir models/metrics --epochs 25 --batch-size 128
 ```
 
 Generated artifacts:
@@ -59,11 +72,16 @@ Generated artifacts:
 - `models/rhythm/rhythm_feature_schema.json`
 - `models/rhythm/rhythm_decision_config.json`
 - `models/metrics/rhythm_threshold_tuning.json`
-- `models/rhythm/rhythm_cnn_model.pt`
-- `models/rhythm/rhythm_cnn_metadata.json`
 - `models/ectopy/ectopy_feature_model.pkl`
 - `models/ectopy/ectopy_scaler.pkl`
 - `models/ectopy/ectopy_feature_schema.json`
+
+Research-only CNN artifacts:
+
+- `models/research/rhythm_cnn/rhythm_cnn_model.pt`
+- `models/research/rhythm_cnn/rhythm_cnn_metadata.json`
+- `models/metrics/rhythm_cnn_metrics.json`
+- `models/metrics/rhythm_cnn_confusion_matrix.png`
 
 PVC/PAC ectopy labels:
 
@@ -75,11 +93,9 @@ PVC/PAC ectopy labels:
 
 Rhythm inference mode:
 
-- default `RHYTHM_PREDICTOR_MODE=feature`: use the validated feature model for realtime AFib/rhythm alerts.
-- `RHYTHM_PREDICTOR_MODE=cnn`: force the CNN model for experiments.
-- `RHYTHM_PREDICTOR_MODE=auto`: use CNN if `rhythm_cnn_model.pt` exists, otherwise use feature model.
-
-Current model choice: keep `feature` as production default. The CNN result is close on accuracy but still weaker on macro F1, AFib recall, and noise recall.
+- Production realtime always uses `rhythm_feature_model`.
+- CNN rhythm is kept only for research/comparison and is not imported by `src.api.pipeline`.
+- Current model choice: feature model, because it is stronger on macro F1, AFib recall, noise recall, and lighter for Raspberry Pi.
 
 Evaluate long-term AF episode behavior:
 
@@ -126,6 +142,22 @@ Dashboard/API endpoints:
 - `GET /personal-baseline/status?patient_id=...`
 - `POST /polar/start`
 - `POST /polar/stop`
+
+Long-running Raspberry Pi validation:
+
+```bash
+python -m src.services.pi_runtime_monitor --base-url http://127.0.0.1:8000 --patient-id polar_h10 --duration-hours 24 --interval-seconds 60 --output logs/pi_soak_24h.jsonl
+python -m src.services.build_soak_report --input logs/pi_soak_24h.jsonl --alert-review logs/alert_review.csv --summary-output logs/pi_soak_24h_summary.json --report-output logs/pi_soak_24h_report.md
+```
+
+API key protection before exposing outside LAN/VPN:
+
+```env
+API_AUTH_ENABLED=1
+API_KEY=<secret>
+API_PUBLIC_PATHS=/health,/dashboard
+ALLOWED_ORIGINS=https://your-app-domain.example
+```
 
 Predict endpoint:
 

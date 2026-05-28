@@ -33,8 +33,8 @@ Các module chính:
 | Module | File chính | Output | Vai trò |
 |---|---|---|---|
 | Signal Quality | `src/features/ecg_features.py::evaluate_signal_quality` | `good/fair/poor` + score + reasons | Chặn false alarm khi tín hiệu xấu |
-| Rhythm (feature) | `src/inference/rhythm_inference.py::RhythmFeaturePredictor` | `normal/possible_afib/other_rhythm/noise` | Production default classifier |
-| Rhythm (CNN) | `src/inference/rhythm_cnn_inference.py::RhythmCnnPredictor` | Cùng 4 class | Optional, cần `torch` + file `.pt` |
+| Rhythm (feature) | `src/inference/rhythm_inference.py::RhythmFeaturePredictor` | `normal/possible_afib/other_rhythm/noise` | Production realtime classifier |
+| Rhythm (CNN research) | `src/inference/rhythm_cnn_inference.py::RhythmCnnPredictor` | Cùng 4 class | Research/comparison only, not imported by `src.api.pipeline` |
 | Ectopy (PVC/PAC) | `src/inference/ectopy_inference.py::EctopyFeaturePredictor` | `normal/pvc/pac/mixed_ectopic/other` | Detect ngoại tâm thu |
 | Stress | `src/inference/stress_inference.py::StressPredictor` | `non_stress/stress/unknown` | WESAD, 300s rolling RR buffer |
 | HR Event | `src/inference/hr_event.py::detect_hr_event` | `tachycardia_at_rest/bradycardia/normal_hr/unknown` | Rule-based với activity context |
@@ -96,7 +96,8 @@ ElderlyCareModel/
 │   └── services/                     # collect_real_data.py, soak_test.py
 ├── models/
 │   ├── stress/                       # rf_model.pkl, svm_pipeline.pkl, scaler_final.pkl, model_metadata.json, stress_feature_schema.json
-│   ├── rhythm/                       # rhythm_feature_model.pkl, rhythm_scaler.pkl, rhythm_feature_schema.json, label_map.json, rhythm_decision_config.json, rhythm_cnn_model.pt, rhythm_cnn_metadata.json
+│   ├── rhythm/                       # rhythm_feature_model.pkl, rhythm_scaler.pkl, rhythm_feature_schema.json, label_map.json, rhythm_decision_config.json
+│   ├── research/rhythm_cnn/          # rhythm_cnn_model.pt, rhythm_cnn_metadata.json (research only)
 │   ├── ectopy/                       # ectopy_feature_model.pkl, ectopy_scaler.pkl, ectopy_feature_schema.json, label_map.json
 │   ├── anomaly_legacy/               # isolation_forest_model.pkl, anomaly_scaler.pkl, anomaly_feature_schema.json
 │   ├── runtime/                      # sensor_context_config.json (per-user calibrated thresholds)
@@ -163,7 +164,7 @@ Trường mới được thêm so với code cũ chỉ có `anomaly` và `stress
     },
     "possible_afib_probability": 0.78,
     "window_count": 1,
-    "model_source": "rhythm_feature_model | rhythm_cnn_model",
+    "model_source": "rhythm_feature_model",
     "afib_decision": {                     // metadata về ngưỡng quyết định
       "mode": "probability_only | argmax_and_threshold",
       "episode_threshold": 0.05,
@@ -475,8 +476,6 @@ App nên hỗ trợ tô màu / icon theo `event_type`:
 | `MODEL_ROOT` | `models` | Folder gốc models |
 | `STRESS_MODEL_DIR` | `models/stress` | — |
 | `RHYTHM_MODEL_PATH` | `models/rhythm/rhythm_feature_model.pkl` | — |
-| `RHYTHM_CNN_MODEL_PATH` | `models/rhythm/rhythm_cnn_model.pt` | — |
-| `RHYTHM_PREDICTOR_MODE` | `feature` | `feature / cnn / auto` |
 | `RHYTHM_AFIB_DECISION_MODE` | `probability_only` (override config) | — |
 | `RHYTHM_AFIB_EPISODE_THRESHOLD` | 0.05 (từ rhythm_decision_config.json) | — |
 | `RHYTHM_AFIB_ALERT_THRESHOLD` | 0.28 | — |
@@ -490,6 +489,11 @@ App nên hỗ trợ tô màu / icon theo `event_type`:
 | `MONGODB_SYNC_ENABLED` | false | Auto-start scheduler |
 | `MONGODB_SYNC_INTERVAL_SECONDS` | 300 | — |
 | `SAVE_LEGACY_RAW_CSV` | 0 | Set `1` để bật CSV raw |
+| `MQTT_ENABLED` | 1 | Bật MQTT live vitals/alert |
+| `API_AUTH_ENABLED` | 0 | Bật API key middleware trước khi mở ngoài LAN |
+| `API_KEY` | unset | Secret cho header `X-API-Key` |
+| `API_PUBLIC_PATHS` | `/health,/dashboard` | Các HTTP path không cần key khi auth bật |
+| `ALLOWED_ORIGINS` | `*` | CORS origins, production nên set domain cụ thể |
 
 ---
 
@@ -588,15 +592,14 @@ Bảng chính:
 ## 10. Pitfalls / quirks app dev cần biết
 
 1. `RhythmFeaturePredictor` và `EctopyFeaturePredictor` **validate strict schema** lúc load. Nếu file `*_feature_schema.json` không khớp `RHYTHM_FEATURE_COLUMNS` / `ECTOPY_FEATURE_COLUMNS`, predictor sẽ trả `{label: "unknown", reason: "...schema mismatch..."}`. App phải hiển thị gracefully.
-2. `rhythm_cnn_predictor.loaded` có thể = false nếu chưa có file `.pt` hoặc thiếu `torch`. Khi đó `model_source` của rhythm sẽ là `rhythm_feature_model` (do `RHYTHM_PREDICTOR_MODE` fallback). App có thể show badge "CNN unavailable" dựa vào `health.rhythm_cnn_model_loaded`.
-3. `_get_af_tracker(patient_id)` lưu state trong RAM. Khi restart server, AF burden/count reset về 0 trừ khi rebuild từ history. App KHÔNG nên tin tuyệt đối `af_episode.af_burden_percent` qua restart; có thể dùng `compute_session_summary` thay.
-4. Stress dùng **rolling RR buffer 300s, step 60s**. Trong 1–5 phút đầu sẽ luôn trả `unknown` với reason `warming_up_stress_window`. App cần show "warming up" thay vì error.
-5. `signal_quality.label = "poor"` short-circuit toàn bộ pipeline. App cần highlight phần này thật rõ vì sẽ mute mọi card khác.
-6. `sensor_context = {}` (object rỗng) khi không gửi ACC samples. App phải null-safe trên mọi field bên trong.
-7. Timestamps: backend đa số dùng ISO 8601 UTC. `timestamp_epoch` (Unix seconds float) chỉ có ở row từ DB.
-8. `compute_*` endpoints (risk-summary, session-summary, daily-health-assessment, health-report) đều **save snapshot** vào `assessment_snapshots`. App có thể query lịch sử snapshots qua `/storage/assessment-snapshots`.
-9. CORS đã mở `*` cho mọi origin (`src/api/pipeline.py:1198-1204`). App web frontend trên domain khác kết nối được ngay.
-10. Polar collector LƯU sample khi chạy. Nếu app gọi `/ingest-ecg` thủ công song song với Polar đang chạy → sẽ có duplicate predictions cùng patient_id.
+2. `_get_af_tracker(patient_id)` lưu state trong RAM. Khi restart server, AF burden/count reset về 0 trừ khi rebuild từ history. App KHÔNG nên tin tuyệt đối `af_episode.af_burden_percent` qua restart; có thể dùng `compute_session_summary` thay.
+3. Stress dùng **rolling RR buffer 300s, step 60s**. Trong 1–5 phút đầu sẽ luôn trả `unknown` với reason `warming_up_stress_window`. App cần show "warming up" thay vì error.
+4. `signal_quality.label = "poor"` short-circuit toàn bộ pipeline. App cần highlight phần này thật rõ vì sẽ mute mọi card khác.
+5. `sensor_context = {}` (object rỗng) khi không gửi ACC samples. App phải null-safe trên mọi field bên trong.
+6. Timestamps: backend đa số dùng ISO 8601 UTC. `timestamp_epoch` (Unix seconds float) chỉ có ở row từ DB.
+7. `compute_*` endpoints (risk-summary, session-summary, daily-health-assessment, health-report) đều **save snapshot** vào `assessment_snapshots`. App có thể query lịch sử snapshots qua `/storage/assessment-snapshots`.
+8. CORS đã mở `*` cho mọi origin (`src/api/pipeline.py:1198-1204`). App web frontend trên domain khác kết nối được ngay.
+9. Polar collector LƯU sample khi chạy. Nếu app gọi `/ingest-ecg` thủ công song song với Polar đang chạy → sẽ có duplicate predictions cùng patient_id.
 
 ---
 
@@ -637,7 +640,7 @@ Bảng chính:
 - [ ] Xử lý null cho `heart_rate_bpm`, fields trong `sensor_context`, `stress` warming-up case.
 - [ ] Cập nhật waveform endpoint: chuyển sang `/latest-ecg` (downsampled tới `max_samples` qua query).
 - [ ] Update mọi `POST /ingest-ecg` payload: thêm `acc_samples` nếu có, sample_rate đúng 130.
-- [ ] Theo dõi `/health` để hiển thị badge "model not loaded" (rhythm_cnn_model_loaded, ectopy_model_loaded, …).
+- [ ] Theo dõi `/health` để hiển thị badge "model not loaded" (`rhythm_model_loaded`, `stress_model_loaded`, `ectopy_model_loaded`, …).
 - [ ] Nếu app có tính năng MongoDB sync trigger, gắn vào `/sync/mongodb` hoặc `/storage/sync-scheduler/*`.
 
 ---

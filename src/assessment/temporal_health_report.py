@@ -104,12 +104,13 @@ def _realtime_layer(latest, minutes=DEFAULT_REALTIME_MINUTES):
             _finding(
                 "current_ectopy",
                 "medium",
-                "Current PVC/PAC-like activity",
-                "PVC/PAC-like activity appears in the latest window.",
+                "Current PVC/PAC-like activity (experimental)",
+                "PVC/PAC-like activity appears in the latest window and is treated as a secondary screening signal.",
                 {
                     "ectopy_label": ectopy.get("label"),
                     "pvc_probability": round(_safe_float(ectopy.get("pvc_probability")), 4),
                     "pac_probability": round(_safe_float(ectopy.get("pac_probability")), 4),
+                    "assessment_role": "secondary_signal",
                 },
             )
         )
@@ -265,9 +266,7 @@ def _long_term_layer(patient_id=None, days=DEFAULT_LONG_TERM_DAYS, db_path=None)
                 )
             )
 
-        if ectopy_count >= 20:
-            ectopy_level = "high"
-        elif ectopy_count >= 5:
+        if ectopy_count >= 5:
             ectopy_level = "medium"
         else:
             ectopy_level = None
@@ -276,9 +275,9 @@ def _long_term_layer(patient_id=None, days=DEFAULT_LONG_TERM_DAYS, db_path=None)
                 _finding(
                     "long_term_ectopy_activity",
                     ectopy_level,
-                    "Repeated PVC/PAC-like activity",
-                    "PVC/PAC-like events recur across the selected days.",
-                    {"event_count": ectopy_count},
+                    "Repeated PVC/PAC-like activity (experimental)",
+                    "PVC/PAC-like events recur across the selected days and should be interpreted as a secondary signal.",
+                    {"event_count": ectopy_count, "assessment_role": "secondary_signal"},
                 )
             )
 

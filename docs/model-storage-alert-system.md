@@ -235,6 +235,25 @@ Thu tu uu tien:
 - Kiem tra MQTT broker co topic alert retained.
 - Kiem tra dashboard co cap nhat `alert_level`, event timeline va health report.
 
+### 3.6. Bao mat API
+
+Khi chi chay trong LAN/VPN, co the giu `API_AUTH_ENABLED=0` de demo nhanh. Truoc khi mo API ra ngoai LAN, bat API key:
+
+```env
+API_AUTH_ENABLED=1
+API_KEY=<secret>
+API_PUBLIC_PATHS=/health,/dashboard
+ALLOWED_ORIGINS=https://your-app-domain.example
+```
+
+Client gui:
+
+```http
+X-API-Key: <secret>
+```
+
+Khong expose truc tiep cac endpoint dieu khien thiet bi va storage neu chua co auth: `/polar/*`, `/storage/*`, `/events/rebuild`, `/personal-baseline/*`, `/guided-baseline/*`.
+
 ---
 
 ## 4. Ket luan thuyet trinh

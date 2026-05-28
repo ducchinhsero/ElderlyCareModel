@@ -3,6 +3,7 @@ import asyncio
 import json
 import os
 import threading
+import time
 import urllib.request
 from datetime import datetime
 
@@ -81,17 +82,18 @@ from src.inference.af_episode_tracker import AFEpisodeTracker
 from src.inference.alert_engine import map_rhythm_to_alert
 from src.inference.ectopy_inference import EctopyFeaturePredictor
 from src.inference.hr_event import detect_hr_event
-from src.inference.rhythm_cnn_inference import RhythmCnnPredictor
 from src.inference.rhythm_inference import RhythmFeaturePredictor
 
 try:
-    from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+    from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
     from fastapi.middleware.cors import CORSMiddleware
-    from fastapi.responses import HTMLResponse
+    from fastapi.responses import HTMLResponse, JSONResponse
 except ImportError:  # Allows feature code and BLE demo to run without FastAPI installed.
     FastAPI = None
     HTTPException = RuntimeError
+    Request = None
     HTMLResponse = None
+    JSONResponse = None
     WebSocket = None
     WebSocketDisconnect = RuntimeError
     CORSMiddleware = None
@@ -153,17 +155,6 @@ ECTOPY_LABEL_MAP_PATH = os.getenv(
     "ECTOPY_LABEL_MAP_PATH",
     os.path.join(MODEL_ROOT, "ectopy", "label_map.json"),
 )
-RHYTHM_CNN_MODEL_PATH = os.getenv(
-    "RHYTHM_CNN_MODEL_PATH",
-    os.path.join(MODEL_ROOT, "rhythm", "rhythm_cnn_model.pt"),
-)
-RHYTHM_CNN_METADATA_PATH = os.getenv(
-    "RHYTHM_CNN_METADATA_PATH",
-    os.path.join(MODEL_ROOT, "rhythm", "rhythm_cnn_metadata.json"),
-)
-RHYTHM_PREDICTOR_MODE = os.getenv("RHYTHM_PREDICTOR_MODE", "feature").lower()
-
-
 def _load_json_config(path):
     try:
         with open(path, "r", encoding="utf-8") as f:
@@ -203,6 +194,18 @@ ALERT_WEBHOOK_LEVELS = {
     for item in os.getenv("ALERT_WEBHOOK_LEVELS", "medium,high,critical").split(",")
     if item.strip()
 }
+API_AUTH_ENABLED = os.getenv("API_AUTH_ENABLED", "0").strip().lower() in {"1", "true", "yes", "on"}
+API_KEY = os.getenv("API_KEY", "").strip()
+API_PUBLIC_PATHS = {
+    item.strip()
+    for item in os.getenv("API_PUBLIC_PATHS", "/health,/dashboard").split(",")
+    if item.strip()
+}
+ALLOWED_ORIGINS = [
+    item.strip()
+    for item in os.getenv("ALLOWED_ORIGINS", "*").split(",")
+    if item.strip()
+]
 
 HR_UUID = "00002a37-0000-1000-8000-00805f9b34fb"
 PMD_CONTROL = "fb005c81-02e7-f387-1cad-8acd2d8df0c8"
@@ -271,10 +274,6 @@ ectopy_predictor = EctopyFeaturePredictor(
     schema_path=ECTOPY_SCHEMA_PATH,
     label_map_path=ECTOPY_LABEL_MAP_PATH,
 )
-rhythm_cnn_predictor = RhythmCnnPredictor(
-    model_path=RHYTHM_CNN_MODEL_PATH,
-    metadata_path=RHYTHM_CNN_METADATA_PATH,
-)
 anomaly_feature_columns = _load_schema(ANOMALY_SCHEMA_PATH, ANOMALY_FEATURE_COLUMNS)
 latest_result = None
 prediction_history = []
@@ -285,6 +284,13 @@ polar_status = {
     "address": None,
     "last_error": None,
     "last_update": None,
+    "last_packet_at": None,
+    "last_prediction_at": None,
+    "connect_attempts": 0,
+    "successful_connections": 0,
+    "reconnect_count": 0,
+    "last_connected_at": None,
+    "last_disconnected_at": None,
 }
 calibrated_anomaly_cache = {}
 af_episode_trackers = {}
@@ -353,19 +359,7 @@ def _get_af_tracker(patient_id):
 
 
 def _predict_rhythm(ecg_samples, sample_rate_hz):
-    mode = RHYTHM_PREDICTOR_MODE
-    if mode == "cnn":
-        return rhythm_cnn_predictor.predict(ecg_samples, sample_rate_hz)
-    if mode == "feature":
-        return rhythm_predictor.predict(ecg_samples, sample_rate_hz)
-    if rhythm_cnn_predictor.loaded:
-        result = rhythm_cnn_predictor.predict(ecg_samples, sample_rate_hz)
-        if result.get("label") != "unknown":
-            return result
-    result = rhythm_predictor.predict(ecg_samples, sample_rate_hz)
-    if not rhythm_cnn_predictor.loaded:
-        result["cnn_fallback_reason"] = rhythm_cnn_predictor.load_error
-    return result
+    return rhythm_predictor.predict(ecg_samples, sample_rate_hz)
 
 
 def _persist_result(result):
@@ -1097,9 +1091,12 @@ async def bluetooth_prediction_stream(address, chunk_seconds=30):
                 collected_acc.extend(samples)
 
     print(f"Connecting to Polar H10 at {address}...")
+    polar_status["connect_attempts"] = int(polar_status.get("connect_attempts") or 0) + 1
     async with BleakClient(address, timeout=20) as client:
         if not client.is_connected:
             raise RuntimeError("Unable to connect to Polar H10")
+        polar_status["successful_connections"] = int(polar_status.get("successful_connections") or 0) + 1
+        polar_status["last_connected_at"] = datetime.now().astimezone().isoformat()
 
         hr_notify_started = False
         try:
@@ -1136,6 +1133,8 @@ async def bluetooth_prediction_stream(address, chunk_seconds=30):
                     "pmd_ecg_packets_seen": pmd_ecg_packets_seen,
                     "pmd_acc_packets_seen": pmd_acc_packets_seen,
                 }
+                if pmd_packets_seen:
+                    polar_status["last_packet_at"] = datetime.now().astimezone().isoformat()
                 print(
                     f"Collected ECG samples: {len(ecg_signal)}, "
                     f"ACC samples: {len(acc_signal)}, "
@@ -1175,8 +1174,10 @@ async def bluetooth_prediction_stream(address, chunk_seconds=30):
                     acc_sample_rate_hz=FS_ACC_HZ if acc_signal else None,
                 )
                 polar_status["last_update"] = result["timestamp"]
+                polar_status["last_prediction_at"] = result["timestamp"]
                 print(result)
         finally:
+            polar_status["last_disconnected_at"] = datetime.now().astimezone().isoformat()
             try:
                 await client.write_gatt_char(PMD_CONTROL, ACC_STOP_CMD, response=True)
             except Exception:
@@ -1203,20 +1204,26 @@ async def polar_background_collector(address, chunk_seconds=30):
             "address": address,
             "last_error": None,
             "last_update": None,
+            "started_at": datetime.now().astimezone().isoformat(),
         }
     )
+    seen_successful_connection = False
     try:
         while True:
             try:
                 await bluetooth_prediction_stream(address, chunk_seconds=chunk_seconds)
+                seen_successful_connection = True
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
+                if seen_successful_connection or int(polar_status.get("successful_connections") or 0) > 0:
+                    polar_status["reconnect_count"] = int(polar_status.get("reconnect_count") or 0) + 1
                 polar_status["last_error"] = str(exc)
                 print(f"Polar background collector error: {exc}. Reconnecting in 10 seconds.")
                 await asyncio.sleep(10)
     finally:
         polar_status["running"] = False
+        polar_status["stopped_at"] = datetime.now().astimezone().isoformat()
 
 
 async def bluetooth_demo_loop(address=None):
@@ -1236,11 +1243,38 @@ if FastAPI is not None:
     app = FastAPI(title="Elderly Care ECG API")
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],
+        allow_origins=ALLOWED_ORIGINS or ["*"],
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    def _path_is_public(path):
+        if path in API_PUBLIC_PATHS:
+            return True
+        return any(
+            public_path.endswith("*") and path.startswith(public_path[:-1])
+            for public_path in API_PUBLIC_PATHS
+        )
+
+    def _valid_api_key(supplied_key):
+        return bool(API_KEY) and supplied_key == API_KEY
+
+    @app.middleware("http")
+    async def api_key_middleware(request: Request, call_next):
+        if not API_AUTH_ENABLED or request.method.upper() == "OPTIONS":
+            return await call_next(request)
+        if _path_is_public(request.url.path):
+            return await call_next(request)
+        if not API_KEY:
+            return JSONResponse(
+                status_code=503,
+                content={"detail": "API authentication is enabled but API_KEY is not configured."},
+            )
+        supplied_key = request.headers.get("X-API-Key") or request.query_params.get("api_key")
+        if not _valid_api_key(supplied_key):
+            return JSONResponse(status_code=401, content={"detail": "Invalid or missing API key."})
+        return await call_next(request)
 
     @app.on_event("startup")
     async def startup_background_sync():
@@ -1450,9 +1484,9 @@ if FastAPI is not None:
         <div class="sub" id="rhythm-alert">rhythm alert --</div>
       </div>
       <div class="card">
-        <div class="label">PVC/PAC</div>
+        <div class="label">PVC/PAC-like</div>
         <div class="value" id="ectopy">--</div>
-        <div class="sub" id="ectopy-detail">PVC -- | PAC --</div>
+        <div class="sub" id="ectopy-detail">secondary signal | PVC -- | PAC --</div>
       </div>
       <div class="card">
         <div class="label">AF episode</div>
@@ -1628,7 +1662,7 @@ if FastAPI is not None:
         `${result.rhythm_alert?.level || "--"} | ${result.rhythm_alert?.message || "--"}`;
       document.getElementById("ectopy").textContent = result.ectopy?.label || "--";
       document.getElementById("ectopy-detail").textContent =
-        `PVC ${Math.round((result.ectopy?.pvc_probability || 0) * 100)}%`
+        `secondary signal | PVC ${Math.round((result.ectopy?.pvc_probability || 0) * 100)}%`
         + ` | PAC ${Math.round((result.ectopy?.pac_probability || 0) * 100)}%`
         + (result.ectopy?.model_source ? ` | ${result.ectopy.model_source}` : "");
       document.getElementById("af-episode").textContent =
@@ -1941,11 +1975,9 @@ if FastAPI is not None:
             "anomaly_scaler_loaded": anomaly_scaler is not None,
             "rhythm_model_loaded": rhythm_predictor.loaded,
             "rhythm_model_error": rhythm_predictor.load_error,
+            "rhythm_model_source": "rhythm_feature_model",
             "ectopy_model_loaded": ectopy_predictor.loaded,
             "ectopy_model_error": ectopy_predictor.load_error,
-            "rhythm_cnn_model_loaded": rhythm_cnn_predictor.loaded,
-            "rhythm_cnn_model_error": rhythm_cnn_predictor.load_error,
-            "rhythm_predictor_mode": RHYTHM_PREDICTOR_MODE,
             "rhythm_afib_decision_mode": RHYTHM_AFIB_DECISION_MODE,
             "rhythm_afib_episode_threshold": RHYTHM_AFIB_EPISODE_THRESHOLD,
             "rhythm_afib_alert_threshold": RHYTHM_AFIB_ALERT_THRESHOLD,
@@ -1961,6 +1993,9 @@ if FastAPI is not None:
             "mqtt_connected": mqtt_publisher.is_connected(),
             "mqtt_host": f"{os.getenv('MQTT_HOST', 'localhost')}:{os.getenv('MQTT_PORT', '1883')}",
             "mqtt_topic_prefix": os.getenv("MQTT_TOPIC_PREFIX", "elderly_care"),
+            "api_auth_enabled": API_AUTH_ENABLED,
+            "api_auth_configured": bool(API_KEY),
+            "allowed_origins": ALLOWED_ORIGINS,
             "polar": polar_status,
         }
 
@@ -1978,6 +2013,11 @@ if FastAPI is not None:
 
     @app.websocket("/ws/vitals")
     async def ws_vitals(websocket: WebSocket):
+        if API_AUTH_ENABLED:
+            supplied_key = websocket.headers.get("X-API-Key") or websocket.query_params.get("api_key")
+            if not _valid_api_key(supplied_key):
+                await websocket.close(code=1008)
+                return
         await websocket.accept()
         vitals_websocket_clients.add(websocket)
         try:

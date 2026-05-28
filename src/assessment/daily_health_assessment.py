@@ -206,9 +206,7 @@ def _build_findings(history, events, data_quality):
     ectopy_ratio = ectopy_window_count / denominator
     pvc_event_count = _event_label_count(events, "ectopy_suspicion", "pvc")
     pac_event_count = _event_label_count(events, "ectopy_suspicion", "pac")
-    if ectopy_event_count >= 10 or ectopy_ratio >= 0.20:
-        ectopy_level = "high"
-    elif ectopy_event_count >= 3 or ectopy_ratio >= 0.05:
+    if ectopy_event_count >= 3 or ectopy_ratio >= 0.05:
         ectopy_level = "medium"
     else:
         ectopy_level = None
@@ -217,14 +215,15 @@ def _build_findings(history, events, data_quality):
             _finding(
                 "ectopy_activity",
                 ectopy_level,
-                "PVC/PAC-like activity",
-                "PVC/PAC-like activity was observed repeatedly in the monitoring period.",
+                "PVC/PAC-like activity (experimental)",
+                "PVC/PAC-like activity was observed repeatedly and should be treated as a secondary screening signal.",
                 {
                     "event_count": ectopy_event_count,
                     "window_count": ectopy_window_count,
                     "ectopy_window_ratio": round(ectopy_ratio, 4),
                     "pvc_event_count": pvc_event_count,
                     "pac_event_count": pac_event_count,
+                    "assessment_role": "secondary_signal",
                 },
             )
         )

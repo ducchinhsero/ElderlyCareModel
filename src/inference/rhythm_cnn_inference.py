@@ -13,8 +13,8 @@ from src.preprocessing import (
 )
 
 
-DEFAULT_RHYTHM_CNN_MODEL_PATH = "models/rhythm/rhythm_cnn_model.pt"
-DEFAULT_RHYTHM_CNN_METADATA_PATH = "models/rhythm/rhythm_cnn_metadata.json"
+DEFAULT_RHYTHM_CNN_MODEL_PATH = "models/research/rhythm_cnn/rhythm_cnn_model.pt"
+DEFAULT_RHYTHM_CNN_METADATA_PATH = "models/research/rhythm_cnn/rhythm_cnn_metadata.json"
 
 
 def _unknown_result(reason, window_count=0):

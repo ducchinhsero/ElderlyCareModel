@@ -314,12 +314,21 @@ Da them:
 - Log text: `logs/background_sync.log`.
 - Log JSONL tung lan sync: `logs/background_sync_runs.jsonl`.
 - Soak test HTTP: `src/services/soak_test.py`.
+- Monitor Polar/Raspberry that: `src/services/pi_runtime_monitor.py`.
+- Tao report soak test 24h: `src/services/build_soak_report.py`.
 - Tai lieu van hanh: `docs/soak-test-background-sync.md`.
 
 Lenh soak test mau:
 
 ```powershell
 python -m src.services.soak_test --base-url http://127.0.0.1:8000 --duration-minutes 30 --check-storage --sync-every 10 --purge-after-sync
+```
+
+Lenh soak test Polar that 24h:
+
+```powershell
+python -m src.services.pi_runtime_monitor --base-url http://127.0.0.1:8000 --patient-id polar_h10 --duration-hours 24 --interval-seconds 60 --output logs/pi_soak_24h.jsonl
+python -m src.services.build_soak_report --input logs/pi_soak_24h.jsonl --alert-review logs/alert_review.csv --summary-output logs/pi_soak_24h_summary.json --report-output logs/pi_soak_24h_report.md
 ```
 
 ## 4. Cac phan chua hoan thanh hoac can lam tiep
@@ -335,15 +344,16 @@ Background sync scheduler da co trong code, nhung can chay soak test voi Polar H
 - Kiem tra MongoDB co document moi.
 - Kiem tra SQLite khong tang vo han khi mang on dinh.
 
-### 4.2 Chua test soak test dai han tren Raspberry bang Polar that
+### 4.2 Can chay va review soak test dai han tren Raspberry bang Polar that
 
-Can test tren Raspberry Pi:
+Da co tooling monitor/report, nhung van can chay thuc te tren Raspberry Pi:
 
 - Chay lien tuc 6-24 gio.
 - Kiem tra CPU/RAM.
 - Kiem tra dung luong SQLite.
 - Kiem tra Bluetooth Polar reconnect.
 - Kiem tra MongoDB sync khi mat mang roi co mang lai.
+- Review `logs/alert_review.csv` de dem alert sai.
 
 ### 4.3 Chua co production retention policy day du
 

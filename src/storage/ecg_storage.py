@@ -1570,6 +1570,10 @@ def purge_synced_raw_chunks(retention_hours=24, limit=10000, db_path=DB_PATH):
 
 
 def storage_status(db_path=DB_PATH):
+    db_files = {}
+    for suffix in ("", "-wal", "-shm"):
+        path = f"{db_path}{suffix}"
+        db_files[os.path.basename(path)] = os.path.getsize(path) if os.path.exists(path) else 0
     conn = get_connection(db_path)
     try:
         counts = {}
@@ -1597,6 +1601,8 @@ def storage_status(db_path=DB_PATH):
         conn.close()
     return {
         "db_path": db_path,
+        "db_files": db_files,
+        "db_total_bytes": sum(db_files.values()),
         "raw_chunk_seconds": DEFAULT_RAW_CHUNK_SECONDS,
         "counts": counts,
         "raw_signal_chunks": [

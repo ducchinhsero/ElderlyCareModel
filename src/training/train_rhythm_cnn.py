@@ -14,7 +14,7 @@ from src.preprocessing import RHYTHM_LABELS, TARGET_SAMPLE_RATE_HZ, save_json
 
 
 DEFAULT_DATASET_DIR = "data_processed/rhythm"
-DEFAULT_MODEL_DIR = "models/rhythm"
+DEFAULT_MODEL_DIR = "models/research/rhythm_cnn"
 DEFAULT_METRICS_DIR = "models/metrics"
 AFIB_CLASS_ID = 1
 NOISE_CLASS_ID = 3

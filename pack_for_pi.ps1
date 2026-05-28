@@ -20,6 +20,7 @@ $exclude = @(
     "$tmp\src\training",
     "$tmp\src\dataset_builders",
     "$tmp\src\evaluation",
+    "$tmp\models\research",
     "$tmp\models\metrics\afdb_rhythm_eval_cache.npz"
 )
 foreach ($p in $exclude) {

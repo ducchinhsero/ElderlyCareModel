@@ -10,8 +10,8 @@ uvicorn
 bleak
 wfdb
 pymongo
-torch
 httpx
 neurokit2
 astropy
 paho-mqtt
+psutil
