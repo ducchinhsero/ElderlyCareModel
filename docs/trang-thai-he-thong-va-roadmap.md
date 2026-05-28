@@ -116,11 +116,14 @@ Da co:
   - `other_rhythm`
   - `noise`
 - CNN rhythm model da train va so sanh, nhung feature model hien tot hon theo ket qua gan nhat.
-- Feature model duoc chon lam model chinh hien tai.
+- Feature model duoc chon lam model production hien tai.
+- CNN da duoc cach ly thanh research tooling/artifact, khong con import/load trong runtime `src.api.pipeline`.
+- Production dependencies khong con can `torch`; neu muon chay lai CNN research thi dung `requirements-research.txt`.
 - Co bao cao so sanh CNN vs feature model trong:
 
 ```text
 docs/so-sanh-rhythm-cnn-feature-model.md
+docs/model-storage-alert-system.md
 ```
 
 Ket luan hien tai:

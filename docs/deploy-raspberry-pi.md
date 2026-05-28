@@ -17,7 +17,7 @@ lưu SQLite local, đồng bộ MongoDB Atlas (tuỳ chọn), phục vụ Flutte
 6. [Bước 3: Cài lib hệ thống + Bluetooth](#bước-3-cài-lib-hệ-thống--bluetooth)
 7. [Bước 4: Chuyển zip từ PC sang Pi](#bước-4-chuyển-zip-từ-pc-sang-pi)
 8. [Bước 5: Giải nén + tạo virtualenv Python](#bước-5-giải-nén--tạo-virtualenv-python)
-9. [Bước 6: Cài Python dependencies (chú ý torch ARM)](#bước-6-cài-python-dependencies-chú-ý-torch-arm)
+9. [Bước 6: Cài Python dependencies](#bước-6-cài-python-dependencies)
 10. [Bước 7: Cấu hình `.env`](#bước-7-cấu-hình-env)
 11. [Bước 8: Pair Polar H10 qua Bluetooth](#bước-8-pair-polar-h10-qua-bluetooth)
 12. [Bước 9: Test foreground (chạy thử bằng tay)](#bước-9-test-foreground-chạy-thử-bằng-tay)
@@ -68,8 +68,8 @@ Output cuối cùng:
 
 | Mục | Khuyến nghị | Tối thiểu | Ghi chú |
 |-----|------------|-----------|---------|
-| Pi model | Pi 5 (8GB) hoặc Pi 4 (4GB) | Pi 4 (2GB) | Pi 3 không đủ — torch và sklearn quá nặng |
-| OS | Raspberry Pi OS 64-bit Bookworm Lite | — | 64-bit BẮT BUỘC cho torch ARM wheel |
+| Pi model | Pi 5 (8GB) hoặc Pi 4 (4GB) | Pi 4 (2GB) | Pi 3 không đủ ổn định cho sklearn + BLE + sync |
+| OS | Raspberry Pi OS 64-bit Bookworm Lite | — | 64-bit khuyến nghị cho scientific Python wheels |
 | SD card | 32GB Class A2 (Samsung EVO Plus, SanDisk Extreme) | 16GB | Class A1 chạy được nhưng SQLite chậm |
 | Nguồn | USB-C 5V/3A chính hãng | 5V/2.5A | Nguồn yếu → BLE rớt, kernel panic |
 | Tản nhiệt | Heatsink + fan PWM | Heatsink thụ động | Khi inference CPU 50–75°C, nóng quá throttle |
@@ -81,7 +81,7 @@ Output cuối cùng:
 - Python 3.11+ (Bookworm có sẵn)
 - BlueZ + bluez-tools
 - SQLite 3
-- Python lib: torch (CPU ARM), scikit-learn, fastapi, uvicorn, bleak, neurokit2, pymongo, wfdb, scipy, numpy, pandas, joblib, httpx, astropy
+- Python lib: scikit-learn, fastapi, uvicorn, bleak, neurokit2, pymongo, wfdb, scipy, numpy, pandas, joblib, httpx, astropy, paho-mqtt
 
 ---
 
@@ -155,7 +155,7 @@ uname -a
 # Phải in: Linux raspberrypi 6.x ... aarch64
 ```
 
-Nếu thấy `armv7l` thay vì `aarch64` → bạn đã flash bản 32-bit → flash lại bản 64-bit. **torch ARM wheel KHÔNG hỗ trợ 32-bit.**
+Nếu thấy `armv7l` thay vì `aarch64` → bạn đã flash bản 32-bit. Nên flash lại bản 64-bit để cài scientific Python wheels ổn định hơn.
 
 ---
 
@@ -249,37 +249,32 @@ mkdir -p /home/custard/elderly_care/logs
 
 ---
 
-## Bước 6: Cài Python dependencies (chú ý torch ARM)
+## Bước 6: Cài Python dependencies
 
-### 6.1 — Cài torch CPU ARM wheel TRƯỚC (BẮT BUỘC từ PyTorch index)
+### 6.1 — Cài production dependencies
 
 ```bash
 source /home/custard/elderly_care/.venv/bin/activate
-pip install torch --index-url https://download.pytorch.org/whl/cpu
+pip install -r requirements.txt
 ```
 
-⚠ Nếu cài `pip install torch` mặc định từ PyPI sẽ build từ source mất 6–10 giờ và có thể fail. **PHẢI dùng `--index-url`** để lấy wheel pre-built ARM CPU.
+Production realtime dùng rhythm feature model, nên không cần PyTorch/Torch trên Raspberry Pi.
 
-### 6.2 — Cài phần còn lại
+### 6.2 — Optional: cài CNN research dependencies
 
 ```bash
-pip install \
-    numpy scipy pandas scikit-learn joblib \
-    fastapi "uvicorn[standard]" \
-    bleak wfdb pymongo httpx \
-    neurokit2 astropy \
-    matplotlib seaborn
+pip install -r requirements-research.txt
 ```
 
-Quá trình mất 15–30 phút (scipy + sklearn build ARM wheel).
+Chỉ dùng bước này nếu muốn chạy lại CNN rhythm research. Không cần cho demo realtime.
 
 ### 6.3 — Verify
 
 ```bash
-python -c "import torch, sklearn, neurokit2, bleak, fastapi, pymongo; print('OK', torch.__version__, sklearn.__version__)"
+python -c "import sklearn, neurokit2, bleak, fastapi, pymongo; print('OK', sklearn.__version__)"
 ```
 
-Phải in `OK 2.x.x 1.x.x` không lỗi.
+Phải in `OK 1.x.x` không lỗi.
 
 ---
 
@@ -762,7 +757,7 @@ Các lỗi phổ biến:
 
 | Lỗi | Nguyên nhân | Fix |
 |-----|------------|-----|
-| `ModuleNotFoundError: torch` | venv không có torch ARM | `pip install torch --index-url https://download.pytorch.org/whl/cpu` |
+| `ModuleNotFoundError: torch` khi chạy CNN research | venv chưa cài dependency nghiên cứu | `pip install -r requirements-research.txt` |
 | `Permission denied: .../data/ecg_monitor.db` | systemd user khác chủ folder | `sudo chown -R custard:custard /home/custard/elderly_care` |
 | `FileNotFoundError: models/...` | WorkingDirectory sai | Verify systemd unit có `WorkingDirectory=/home/custard/elderly_care` |
 | `ValueError: MONGODB_URI is not configured` | EnvironmentFile không load | Đảm bảo `.env` có đúng format `KEY=VALUE` không space, không quote |
@@ -917,7 +912,7 @@ mkdir -p elderly_care/logs
 # 4. Verify
 cd elderly_care
 source .venv/bin/activate
-python -c "import torch, sklearn, neurokit2, fastapi, bleak"
+python -c "import sklearn, neurokit2, fastapi, bleak"
 
 # 5. Update deps nếu requirements.txt thay đổi (so sánh với cũ)
 # pip install --upgrade ...
@@ -1105,7 +1100,7 @@ sqlite3 /home/custard/elderly_care/data/ecg_monitor.db "VACUUM;"
 - [ ] OS Pi: 64-bit Bookworm, SSH OK
 - [ ] Bluetooth `UP RUNNING`
 - [ ] zip giải nén vào `/home/custard/elderly_care/`
-- [ ] venv tạo xong, `import torch, sklearn, bleak, fastapi` không lỗi
+- [ ] venv tạo xong, `import sklearn, bleak, fastapi` không lỗi
 - [ ] `.env` có `POLAR_H10_MAC` đúng + `ECG_DATA_DIR` absolute
 - [ ] Polar H10 paired + trusted trong `bluetoothctl info`
 - [ ] foreground `uvicorn` test trả `/health` = ok với `*_model_loaded: true`

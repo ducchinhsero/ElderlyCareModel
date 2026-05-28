@@ -37,33 +37,33 @@ Kết quả train/evaluate:
 | Feature shape | 11751 windows x 41 features |
 | Split strategy | Group shuffle split |
 | Record overlap | 0 |
-| Accuracy | 73.21% |
-| Macro F1 | 70.62% |
-| AFib recall | 63.58% |
-| Noise recall | 85.29% |
+| Accuracy | 74.07% |
+| Macro F1 | 71.44% |
+| AFib recall | 66.05% |
+| Noise recall | 85.54% |
 
 Classification report chính:
 
 | Lớp | Precision | Recall | F1-score | Support |
 |---|---:|---:|---:|---:|
-| normal | 75.32% | 83.12% | 79.03% | 1197 |
-| possible_afib | 75.74% | 63.58% | 69.13% | 162 |
-| other_rhythm | 61.20% | 46.57% | 52.89% | 569 |
-| noise | 77.90% | 85.29% | 81.43% | 401 |
+| normal | 76.07% | 84.46% | 80.05% | 1197 |
+| possible_afib | 75.35% | 66.05% | 70.39% | 162 |
+| other_rhythm | 62.26% | 46.40% | 53.17% | 569 |
+| noise | 79.03% | 85.54% | 82.16% | 401 |
 
 Confusion matrix:
 
 | Actual \ Predicted | normal | possible_afib | other_rhythm | noise |
 |---|---:|---:|---:|---:|
-| normal | 995 | 7 | 131 | 64 |
-| possible_afib | 24 | 103 | 27 | 8 |
-| other_rhythm | 256 | 23 | 265 | 25 |
-| noise | 46 | 3 | 10 | 342 |
+| normal | 1011 | 6 | 122 | 58 |
+| possible_afib | 19 | 107 | 27 | 9 |
+| other_rhythm | 254 | 27 | 264 | 24 |
+| noise | 45 | 2 | 11 | 343 |
 
 Nhận xét:
 
-- Mô hình phát hiện `possible_afib` tốt hơn CNN, với recall 63.58%.
-- Mô hình nhận biết `noise` rất tốt, recall 85.29%, giúp giảm nguy cơ đưa ra cảnh báo sai trên tín hiệu kém.
+- Mô hình phát hiện `possible_afib` tốt hơn CNN, với recall 66.05%.
+- Mô hình nhận biết `noise` rất tốt, recall 85.54%, giúp giảm nguy cơ đưa ra cảnh báo sai trên tín hiệu kém.
 - Macro F1 cao hơn đáng kể, cho thấy mô hình cân bằng giữa các lớp tốt hơn.
 - Điểm yếu chính là lớp `other_rhythm` vẫn còn bị nhầm sang `normal`, nhưng vẫn tốt hơn CNN về recall.
 
@@ -122,10 +122,10 @@ Nhận xét:
 
 | Chỉ số | Feature Model | CNN Model | Chênh lệch CNN - Feature | Model tốt hơn |
 |---|---:|---:|---:|---|
-| Accuracy | 73.21% | 71.66% | -1.55 điểm % | Feature |
-| Macro F1 | 70.62% | 55.15% | -15.47 điểm % | Feature |
-| AFib recall | 63.58% | 38.65% | -24.93 điểm % | Feature |
-| Noise recall | 85.29% | 48.00% | -37.29 điểm % | Feature |
+| Accuracy | 74.07% | 71.66% | -2.41 điểm % | Feature |
+| Macro F1 | 71.44% | 55.15% | -16.30 điểm % | Feature |
+| AFib recall | 66.05% | 38.65% | -27.40 điểm % | Feature |
+| Noise recall | 85.54% | 48.00% | -37.54 điểm % | Feature |
 
 Điểm quan trọng:
 
@@ -140,15 +140,15 @@ Feature model được chọn làm model chính cho realtime vì:
 
 1. **Khả năng phát hiện AFib tốt hơn**
 
-   Feature model đạt AFib recall 63.58%, trong khi CNN chỉ đạt 38.65%. Với bài toán cảnh báo rung nhĩ, bỏ sót AFib là rủi ro lớn hơn so với việc cần theo dõi thêm.
+   Feature model đạt AFib recall 66.05%, trong khi CNN chỉ đạt 38.65%. Với bài toán cảnh báo rung nhĩ, bỏ sót AFib là rủi ro lớn hơn so với việc cần theo dõi thêm.
 
 2. **Khả năng nhận biết tín hiệu nhiễu tốt hơn**
 
-   Feature model đạt noise recall 85.29%, CNN chỉ đạt 48.00%. Trong dữ liệu thực tế từ Polar H10, tín hiệu có thể bị nhiễu do vận động, tiếp xúc kém hoặc dây đeo chưa ổn định. Nếu model không nhận ra noise, hệ thống có thể đưa ra cảnh báo sai.
+   Feature model đạt noise recall 85.54%, CNN chỉ đạt 48.00%. Trong dữ liệu thực tế từ Polar H10, tín hiệu có thể bị nhiễu do vận động, tiếp xúc kém hoặc dây đeo chưa ổn định. Nếu model không nhận ra noise, hệ thống có thể đưa ra cảnh báo sai.
 
 3. **Cân bằng giữa các lớp tốt hơn**
 
-   Macro F1 của feature model là 70.62%, cao hơn CNN 55.15%. Điều này cho thấy feature model ổn định hơn trên nhiều class, không chỉ học tốt lớp normal.
+   Macro F1 của feature model là 71.44%, cao hơn CNN 55.15%. Điều này cho thấy feature model ổn định hơn trên nhiều class, không chỉ học tốt lớp normal.
 
 4. **Phù hợp với triển khai realtime trên Raspberry Pi**
 
@@ -167,16 +167,17 @@ CNN chưa nên dùng làm model chính ở thời điểm hiện tại, nhưng v
 - Có thể cải thiện sau bằng augmentation, class balancing, kiến trúc sâu hơn hoặc train thêm dữ liệu.
 - Có thể dùng lại khi có GPU hoặc dataset lớn hơn.
 
-Trong code hiện tại, quyết định triển khai là:
+Trong code hiện tại, quyết định triển khai production là:
 
 ```text
-RHYTHM_PREDICTOR_MODE=feature
+src.api.pipeline chỉ import và chạy rhythm_feature_model
 ```
 
-CNN chỉ được bật khi muốn thử nghiệm:
+CNN không còn nằm trong runtime production. Nếu muốn thử nghiệm lại CNN, chạy tooling nghiên cứu:
 
 ```text
-RHYTHM_PREDICTOR_MODE=cnn
+pip install -r requirements-research.txt
+python -m src.training.train_rhythm_cnn --dataset-dir data_processed/rhythm --model-dir models/research/rhythm_cnn --metrics-dir models/metrics
 ```
 
 ## 7. Kết luận thuyết trình
@@ -216,10 +217,10 @@ Kết luận kỹ thuật:
 
 | Metric | Feature | CNN |
 |---|---:|---:|
-| Accuracy | 73.21% | 71.66% |
-| Macro F1 | 70.62% | 55.15% |
-| AFib recall | 63.58% | 38.65% |
-| Noise recall | 85.29% | 48.00% |
+| Accuracy | 74.07% | 71.66% |
+| Macro F1 | 71.44% | 55.15% |
+| AFib recall | 66.05% | 38.65% |
+| Noise recall | 85.54% | 48.00% |
 
 ### Slide 5: Vì sao không chọn CNN lúc này
 
@@ -232,5 +233,4 @@ Kết luận kỹ thuật:
 
 - Dùng feature model làm model chính.
 - Giữ CNN làm hướng nghiên cứu tiếp theo.
-- Pipeline mặc định: `RHYTHM_PREDICTOR_MODE=feature`.
-
+- Pipeline production: `rhythm_feature_model`.

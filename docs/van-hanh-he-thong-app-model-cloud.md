@@ -147,7 +147,6 @@ Tai thu muc:
 ```powershell
 cd D:\DATN\elderly_care-amine\elderly_care-amine
 .\.venv\Scripts\Activate.ps1
-$env:RHYTHM_PREDICTOR_MODE="feature"
 uvicorn src.api.pipeline:app --host 127.0.0.1 --port 8000 --reload
 ```
 
@@ -167,9 +166,9 @@ Can thay cac truong quan trong:
 
 - `status = ok`
 - `rhythm_model_loaded = true`
+- `rhythm_model_source = rhythm_feature_model`
 - `ectopy_model_loaded = true`
 - `anomaly_model_loaded = true`
-- `rhythm_predictor_mode = feature`
 
 ### 6.2. Bat Polar collector
 
