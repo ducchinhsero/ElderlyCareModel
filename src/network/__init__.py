@@ -1,2 +1,1 @@
-"""Network provisioning helpers for Raspberry Pi deployments."""
-
+"""LAN network helpers for Raspberry Pi deployments."""

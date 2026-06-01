@@ -26,7 +26,7 @@ System documentation:
 
 - `docs/model-storage-alert-system.md`: model choice, storage flow, alert flow.
 - `docs/so-sanh-rhythm-cnn-feature-model.md`: detailed CNN vs feature rhythm comparison.
-- `docs/wifi-provisioning-production.md`: AP Mode -> Client Mode Wi-Fi setup for Raspberry Pi production.
+- `docs/lan-setup-production.md`: Ethernet LAN setup for Raspberry Pi production.
 
 Install dependencies:
 
