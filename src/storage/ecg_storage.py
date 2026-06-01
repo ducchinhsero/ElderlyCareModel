@@ -295,6 +295,39 @@ def init_db(conn):
         )
         """
     )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS alert_acknowledgements (
+            event_id TEXT NOT NULL,
+            caregiver_id TEXT NOT NULL,
+            status TEXT NOT NULL,
+            note TEXT,
+            resolution TEXT,
+            acknowledged_at TEXT,
+            resolved_at TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (event_id, caregiver_id)
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS alert_webhook_outbox (
+            webhook_id TEXT PRIMARY KEY,
+            event_ids_json TEXT NOT NULL,
+            patient_id TEXT,
+            payload_json TEXT NOT NULL,
+            status TEXT NOT NULL,
+            attempt_count INTEGER NOT NULL DEFAULT 0,
+            last_attempt_at TEXT,
+            last_error TEXT,
+            delivered_at TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+        """
+    )
     columns = {row[1] for row in conn.execute("PRAGMA table_info(predictions)").fetchall()}
     if "sensor_context_json" not in columns:
         conn.execute("ALTER TABLE predictions ADD COLUMN sensor_context_json TEXT NOT NULL DEFAULT '{}'")
@@ -340,6 +373,18 @@ def init_db(conn):
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_events_type_epoch "
         "ON events(event_type, timestamp_epoch)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_events_severity_epoch "
+        "ON events(severity, timestamp_epoch)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_alert_ack_status "
+        "ON alert_acknowledgements(status, updated_at)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_alert_webhook_status "
+        "ON alert_webhook_outbox(status, created_at)"
     )
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_guided_baseline_sessions_patient "
@@ -758,6 +803,39 @@ def _row_to_event(row):
     }
 
 
+def _row_to_ack(row):
+    if row is None:
+        return {
+            "acknowledged": False,
+            "resolved": False,
+            "status": "unacknowledged",
+        }
+    status = row["status"] or "acknowledged"
+    return {
+        "acknowledged": status in {"acknowledged", "resolved"},
+        "resolved": status == "resolved",
+        "status": status,
+        "caregiver_id": row["caregiver_id"],
+        "note": row["note"],
+        "resolution": row["resolution"],
+        "acknowledged_at": row["acknowledged_at"],
+        "resolved_at": row["resolved_at"],
+        "updated_at": row["updated_at"],
+    }
+
+
+def _latest_ack_for_event(conn, event_id):
+    return conn.execute(
+        """
+        SELECT * FROM alert_acknowledgements
+        WHERE event_id = ?
+        ORDER BY updated_at DESC
+        LIMIT 1
+        """,
+        (event_id,),
+    ).fetchone()
+
+
 def _stable_event_id(event):
     payload = "|".join(
         str(event.get(key) or "")
@@ -879,11 +957,16 @@ def build_events_for_prediction(item):
 
     hr_context = (item.get("sensor_context") or {}).get("hr_context_alert") or {}
     if hr_context.get("level") in {"WATCH", "ALERT", "CRITICAL"}:
+        hr_context_severity = {
+            "WATCH": "medium",
+            "ALERT": "high",
+            "CRITICAL": "critical",
+        }.get(hr_context.get("level"), "medium")
         events.append(
             _make_event(
                 item,
                 "hr_context",
-                "medium" if hr_context.get("level") == "WATCH" else "high",
+                hr_context_severity,
                 hr_context.get("level"),
                 hr_context.get("reason") or "Heart-rate context requires monitoring.",
                 {"hr_context_alert": hr_context},
@@ -1586,6 +1669,8 @@ def storage_status(db_path=DB_PATH):
             "guided_baseline_sessions",
             "guided_baseline_segments",
             "assessment_snapshots",
+            "alert_acknowledgements",
+            "alert_webhook_outbox",
         ):
             counts[table] = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
         raw = conn.execute(
@@ -1650,6 +1735,269 @@ def get_events(
     finally:
         conn.close()
     return [_row_to_event(row) for row in rows]
+
+
+def get_realtime_alerts(
+    patient_id=None,
+    limit=50,
+    include_acknowledged=False,
+    hours=24,
+    db_path=DB_PATH,
+):
+    limit = _positive_int(limit, "limit")
+    hours = _positive_float(hours, "hours")
+    since = datetime.now(timezone.utc) - timedelta(hours=hours)
+    params = [since.timestamp()]
+    where = "timestamp_epoch >= ? AND severity IN ('high', 'critical')"
+    if patient_id:
+        where += " AND patient_id = ?"
+        params.append(patient_id)
+    # Fetch extra rows before filtering acked alerts so callers still receive
+    # enough unacknowledged items when recent alerts have already been handled.
+    params.append(limit * 5)
+
+    conn = get_connection(db_path)
+    try:
+        rows = conn.execute(
+            f"SELECT * FROM events WHERE {where} "
+            "ORDER BY timestamp_epoch DESC, timestamp DESC LIMIT ?",
+            params,
+        ).fetchall()
+        alerts = []
+        for row in rows:
+            event = _row_to_event(row)
+            ack_status = _row_to_ack(_latest_ack_for_event(conn, event["event_id"]))
+            if not include_acknowledged and ack_status["acknowledged"]:
+                continue
+            event["ack_status"] = ack_status
+            alerts.append(event)
+            if len(alerts) >= limit:
+                break
+    finally:
+        conn.close()
+    return {"alert_count": len(alerts), "alerts": alerts}
+
+
+def acknowledge_alert(event_id, caregiver_id="unknown", note="", db_path=DB_PATH):
+    if not event_id:
+        raise ValueError("event_id is required.")
+    caregiver_id = str(caregiver_id or "unknown").strip() or "unknown"
+    now = utc_now_iso()
+    conn = get_connection(db_path)
+    try:
+        event = conn.execute(
+            "SELECT event_id FROM events WHERE event_id = ?",
+            (event_id,),
+        ).fetchone()
+        if event is None:
+            raise KeyError(event_id)
+        conn.execute(
+            """
+            INSERT INTO alert_acknowledgements (
+                event_id, caregiver_id, status, note, resolution,
+                acknowledged_at, resolved_at, created_at, updated_at
+            )
+            VALUES (?, ?, 'acknowledged', ?, NULL, ?, NULL, ?, ?)
+            ON CONFLICT(event_id, caregiver_id) DO UPDATE SET
+                status = CASE
+                    WHEN alert_acknowledgements.status = 'resolved' THEN 'resolved'
+                    ELSE 'acknowledged'
+                END,
+                note = excluded.note,
+                acknowledged_at = COALESCE(alert_acknowledgements.acknowledged_at, excluded.acknowledged_at),
+                updated_at = excluded.updated_at
+            """,
+            (event_id, caregiver_id, note or "", now, now, now),
+        )
+        conn.commit()
+        ack = _row_to_ack(_latest_ack_for_event(conn, event_id))
+    finally:
+        conn.close()
+    return {"event_id": event_id, "ack_status": ack}
+
+
+def resolve_alert(
+    event_id,
+    caregiver_id="unknown",
+    resolution="checked_ok",
+    note="",
+    db_path=DB_PATH,
+):
+    if not event_id:
+        raise ValueError("event_id is required.")
+    caregiver_id = str(caregiver_id or "unknown").strip() or "unknown"
+    allowed = {"checked_ok", "called_support", "false_alarm", "other"}
+    if resolution not in allowed:
+        raise ValueError(f"resolution must be one of: {', '.join(sorted(allowed))}.")
+    now = utc_now_iso()
+    conn = get_connection(db_path)
+    try:
+        event = conn.execute(
+            "SELECT event_id FROM events WHERE event_id = ?",
+            (event_id,),
+        ).fetchone()
+        if event is None:
+            raise KeyError(event_id)
+        conn.execute(
+            """
+            INSERT INTO alert_acknowledgements (
+                event_id, caregiver_id, status, note, resolution,
+                acknowledged_at, resolved_at, created_at, updated_at
+            )
+            VALUES (?, ?, 'resolved', ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(event_id, caregiver_id) DO UPDATE SET
+                status = 'resolved',
+                note = excluded.note,
+                resolution = excluded.resolution,
+                acknowledged_at = COALESCE(alert_acknowledgements.acknowledged_at, excluded.acknowledged_at),
+                resolved_at = excluded.resolved_at,
+                updated_at = excluded.updated_at
+            """,
+            (event_id, caregiver_id, note or "", resolution, now, now, now, now),
+        )
+        conn.commit()
+        ack = _row_to_ack(_latest_ack_for_event(conn, event_id))
+    finally:
+        conn.close()
+    return {"event_id": event_id, "ack_status": ack}
+
+
+def enqueue_alert_webhook(payload, event_ids=None, db_path=DB_PATH):
+    if not payload:
+        return None
+    now = utc_now_iso()
+    webhook_id = str(uuid.uuid4())
+    conn = get_connection(db_path)
+    try:
+        conn.execute(
+            """
+            INSERT INTO alert_webhook_outbox (
+                webhook_id, event_ids_json, patient_id, payload_json, status,
+                attempt_count, created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, 'pending', 0, ?, ?)
+            """,
+            (
+                webhook_id,
+                json.dumps(list(event_ids or []), ensure_ascii=False),
+                payload.get("patient_id"),
+                json.dumps(payload, ensure_ascii=False),
+                now,
+                now,
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    return webhook_id
+
+
+def get_pending_alert_webhooks(limit=20, db_path=DB_PATH):
+    limit = _positive_int(limit, "limit")
+    conn = get_connection(db_path)
+    try:
+        rows = conn.execute(
+            """
+            SELECT * FROM alert_webhook_outbox
+            WHERE status IN ('pending', 'failed')
+              AND attempt_count < 5
+            ORDER BY created_at ASC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+    finally:
+        conn.close()
+    return [
+        {
+            "webhook_id": row["webhook_id"],
+            "event_ids": json.loads(row["event_ids_json"] or "[]"),
+            "patient_id": row["patient_id"],
+            "payload": json.loads(row["payload_json"] or "{}"),
+            "status": row["status"],
+            "attempt_count": row["attempt_count"],
+            "last_error": row["last_error"],
+        }
+        for row in rows
+    ]
+
+
+def mark_alert_webhook_delivered(webhook_id, db_path=DB_PATH):
+    now = utc_now_iso()
+    conn = get_connection(db_path)
+    try:
+        conn.execute(
+            """
+            UPDATE alert_webhook_outbox
+            SET status = 'delivered',
+                delivered_at = ?,
+                last_attempt_at = ?,
+                last_error = NULL,
+                updated_at = ?
+            WHERE webhook_id = ?
+            """,
+            (now, now, now, webhook_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def mark_alert_webhook_failed(webhook_id, error, db_path=DB_PATH):
+    now = utc_now_iso()
+    conn = get_connection(db_path)
+    try:
+        conn.execute(
+            """
+            UPDATE alert_webhook_outbox
+            SET status = 'failed',
+                attempt_count = attempt_count + 1,
+                last_attempt_at = ?,
+                last_error = ?,
+                updated_at = ?
+            WHERE webhook_id = ?
+            """,
+            (now, str(error), now, webhook_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def alert_delivery_status(patient_id=None, db_path=DB_PATH):
+    params = []
+    patient_filter = ""
+    if patient_id:
+        patient_filter = " AND patient_id = ?"
+        params.append(patient_id)
+    conn = get_connection(db_path)
+    try:
+        unacknowledged = conn.execute(
+            f"""
+            SELECT COUNT(*) FROM events e
+            WHERE e.severity IN ('high', 'critical')
+              {patient_filter}
+              AND NOT EXISTS (
+                SELECT 1 FROM alert_acknowledgements a
+                WHERE a.event_id = e.event_id
+                  AND a.status IN ('acknowledged', 'resolved')
+              )
+            """,
+            params,
+        ).fetchone()[0]
+        webhook_rows = conn.execute(
+            """
+            SELECT status, COUNT(*) AS count
+            FROM alert_webhook_outbox
+            GROUP BY status
+            """
+        ).fetchall()
+    finally:
+        conn.close()
+    return {
+        "unacknowledged_urgent_count": int(unacknowledged or 0),
+        "webhook_outbox": {row["status"]: row["count"] for row in webhook_rows},
+    }
 
 
 def rebuild_event_table(patient_id=None, days=30, limit=50000, db_path=DB_PATH):

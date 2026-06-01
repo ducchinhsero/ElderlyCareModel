@@ -11,6 +11,7 @@ Copy-Item "$src\src" "$tmp\src" -Recurse
 Copy-Item "$src\pipeline.py" "$tmp\"
 Copy-Item "$src\requirements.txt" "$tmp\"
 Copy-Item "$src\MODEL_NOTES.md" "$tmp\" -ErrorAction SilentlyContinue
+Copy-Item "$src\deploy" "$tmp\deploy" -Recurse -ErrorAction SilentlyContinue
 
 Write-Host "[2/5] Copy models (artifacts only)..."
 Copy-Item "$src\models" "$tmp\models" -Recurse

@@ -50,20 +50,29 @@ from src.features.ecg_features import (
 )
 from src.features.stress_features import STRESS_WINDOW_SECONDS
 from src.inference.stress_inference import RollingRRBuffer, StressPredictor, unknown_stress
+from src.network.provisioning import read_network_status
 from src.storage.ecg_storage import (
     build_event_timeline,
     build_events_for_prediction,
+    acknowledge_alert,
+    alert_delivery_status,
     compute_daily_summary,
     compute_risk_summary,
     compute_session_summary,
+    enqueue_alert_webhook,
     get_assessment_snapshots,
     get_history,
+    get_pending_alert_webhooks,
     get_latest_ecg,
+    get_realtime_alerts,
     get_raw_chunk,
     get_raw_chunks,
     get_collection_sessions,
+    mark_alert_webhook_delivered,
+    mark_alert_webhook_failed,
     purge_synced_raw_chunks,
     rebuild_event_table,
+    resolve_alert,
     save_assessment_snapshot,
     save_prediction,
     storage_status,
@@ -278,6 +287,7 @@ anomaly_feature_columns = _load_schema(ANOMALY_SCHEMA_PATH, ANOMALY_FEATURE_COLU
 latest_result = None
 prediction_history = []
 vitals_websocket_clients = set()
+alert_websocket_clients = {}
 polar_task = None
 polar_status = {
     "running": False,
@@ -399,7 +409,60 @@ def _broadcast_result(result):
     loop.create_task(_send())
 
 
-def _post_webhook(payload):
+def _urgent_events_for_result(result):
+    if not result:
+        return []
+    return [
+        event
+        for event in build_events_for_prediction(result)
+        if str(event.get("severity") or "").lower() in {"high", "critical"}
+    ]
+
+
+def _alert_websocket_payload(event):
+    if event and "ack_status" not in event:
+        event = {
+            **event,
+            "ack_status": {
+                "acknowledged": False,
+                "resolved": False,
+                "status": "unacknowledged",
+            },
+        }
+    return {
+        "type": "alert",
+        "alert": event,
+        "timestamp": event.get("timestamp") if event else None,
+    }
+
+
+def _broadcast_urgent_alerts(events):
+    if not events or not alert_websocket_clients:
+        return
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return
+
+    async def _send():
+        stale_clients = []
+        for client, options in list(alert_websocket_clients.items()):
+            patient_id = options.get("patient_id")
+            for event in events:
+                if patient_id and event.get("patient_id") != patient_id:
+                    continue
+                try:
+                    await client.send_json(_alert_websocket_payload(event))
+                except Exception:
+                    stale_clients.append(client)
+                    break
+        for client in stale_clients:
+            alert_websocket_clients.pop(client, None)
+
+    loop.create_task(_send())
+
+
+def _send_webhook_payload(payload):
     data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     request = urllib.request.Request(
         ALERT_WEBHOOK_URL,
@@ -407,11 +470,23 @@ def _post_webhook(payload):
         headers={"Content-Type": "application/json"},
         method="POST",
     )
-    try:
-        with urllib.request.urlopen(request, timeout=5):
-            pass
-    except Exception as exc:
-        print(f"Alert webhook failed: {exc}")
+    with urllib.request.urlopen(request, timeout=5):
+        pass
+
+
+def _process_alert_webhook_outbox(limit=10):
+    if not ALERT_WEBHOOK_URL:
+        return {"processed": 0}
+    processed = 0
+    for item in get_pending_alert_webhooks(limit=limit):
+        try:
+            _send_webhook_payload(item["payload"])
+            mark_alert_webhook_delivered(item["webhook_id"])
+        except Exception as exc:
+            mark_alert_webhook_failed(item["webhook_id"], exc)
+            print(f"Alert webhook failed: {exc}")
+        processed += 1
+    return {"processed": processed}
 
 
 def _push_alert_webhook(result):
@@ -435,7 +510,11 @@ def _push_alert_webhook(result):
         "events": events,
         "latest_result": result,
     }
-    threading.Thread(target=_post_webhook, args=(payload,), daemon=True).start()
+    enqueue_alert_webhook(
+        payload,
+        event_ids=[event.get("event_id") for event in events if event.get("event_id")],
+    )
+    threading.Thread(target=_process_alert_webhook_outbox, daemon=True).start()
 
 
 def record_result(
@@ -459,6 +538,7 @@ def record_result(
     del prediction_history[:-50]
     _persist_result(result)
     _broadcast_result(result)
+    _broadcast_urgent_alerts(_urgent_events_for_result(result))
     _push_alert_webhook(result)
     # MQTT publish — non-blocking, fire-and-forget. Separate from WebSocket
     # because MQTT survives app being killed (broker retains the last alert),
@@ -1032,7 +1112,7 @@ async def collect_bluetooth_data(address, duration_seconds=30, collect_rr=False)
     return np.array(collected_ecg), np.array(collected_rr), stats
 
 
-async def bluetooth_prediction_stream(address, chunk_seconds=30):
+async def bluetooth_prediction_stream(address, chunk_seconds=10):
     if BleakClient is None:
         raise RuntimeError("bleak is not installed. Install it to use Polar H10 collection.")
 
@@ -1197,7 +1277,7 @@ async def bluetooth_prediction_stream(address, chunk_seconds=30):
                     pass
 
 
-async def polar_background_collector(address, chunk_seconds=30):
+async def polar_background_collector(address, chunk_seconds=10):
     polar_status.update(
         {
             "running": True,
@@ -1230,7 +1310,7 @@ async def bluetooth_demo_loop(address=None):
     device_address = address or await find_polar_h10(timeout=20)
     while True:
         try:
-            await bluetooth_prediction_stream(device_address, chunk_seconds=30)
+            await bluetooth_prediction_stream(device_address, chunk_seconds=10)
         except (asyncio.CancelledError, KeyboardInterrupt):
             print("Stopping Bluetooth demo.")
             break
@@ -1282,6 +1362,8 @@ if FastAPI is not None:
         # the connect latency. Non-blocking — paho dials in a thread.
         if mqtt_publisher.is_enabled():
             mqtt_publisher.publish_status({"boot": True})
+        if ALERT_WEBHOOK_URL:
+            threading.Thread(target=_process_alert_webhook_outbox, daemon=True).start()
         config = BackgroundSyncConfig.from_env()
         if config.enabled:
             await start_background_sync_scheduler(config)
@@ -1922,7 +2004,7 @@ if FastAPI is not None:
       await fetch("/polar/start", {
         method: "POST",
         headers: {"Content-Type": "application/json"},
-        body: JSON.stringify({chunk_seconds: 30})
+        body: JSON.stringify({chunk_seconds: 10})
       });
       refresh();
     }
@@ -1989,6 +2071,10 @@ if FastAPI is not None:
             "mongodb_sync_scheduler": get_background_sync_status(),
             "alert_webhook_configured": bool(ALERT_WEBHOOK_URL),
             "alert_webhook_levels": sorted(ALERT_WEBHOOK_LEVELS),
+            "alert_delivery": {
+                **alert_delivery_status(),
+                "websocket_alert_clients": len(alert_websocket_clients),
+            },
             "mqtt_enabled": mqtt_publisher.is_enabled(),
             "mqtt_connected": mqtt_publisher.is_connected(),
             "mqtt_host": f"{os.getenv('MQTT_HOST', 'localhost')}:{os.getenv('MQTT_PORT', '1883')}",
@@ -1996,6 +2082,7 @@ if FastAPI is not None:
             "api_auth_enabled": API_AUTH_ENABLED,
             "api_auth_configured": bool(API_KEY),
             "allowed_origins": ALLOWED_ORIGINS,
+            "network_provisioning": read_network_status(),
             "polar": polar_status,
         }
 
@@ -2029,6 +2116,82 @@ if FastAPI is not None:
             pass
         finally:
             vitals_websocket_clients.discard(websocket)
+
+    @app.get("/alerts/realtime")
+    def realtime_alerts(
+        patient_id: str | None = None,
+        limit: int = 50,
+        include_acknowledged: bool = False,
+    ):
+        try:
+            return get_realtime_alerts(
+                patient_id=patient_id,
+                limit=limit,
+                include_acknowledged=include_acknowledged,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+
+    @app.websocket("/ws/alerts")
+    async def ws_alerts(websocket: WebSocket):
+        if API_AUTH_ENABLED:
+            supplied_key = websocket.headers.get("X-API-Key") or websocket.query_params.get("api_key")
+            if not _valid_api_key(supplied_key):
+                await websocket.close(code=1008)
+                return
+        patient_id = websocket.query_params.get("patient_id") or None
+        caregiver_id = websocket.query_params.get("caregiver_id") or "unknown"
+        await websocket.accept()
+        alert_websocket_clients[websocket] = {
+            "patient_id": patient_id,
+            "caregiver_id": caregiver_id,
+        }
+        try:
+            backlog = get_realtime_alerts(
+                patient_id=patient_id,
+                limit=50,
+                include_acknowledged=False,
+            )
+            await websocket.send_json({
+                "type": "alert_backlog",
+                "alerts": backlog.get("alerts") or [],
+                "alert_count": backlog.get("alert_count") or 0,
+            })
+            while True:
+                await websocket.receive_text()
+        except WebSocketDisconnect:
+            pass
+        finally:
+            alert_websocket_clients.pop(websocket, None)
+
+    @app.post("/alerts/{event_id}/ack")
+    def ack_alert(event_id: str, payload: dict | None = None):
+        payload = payload or {}
+        try:
+            return acknowledge_alert(
+                event_id,
+                caregiver_id=payload.get("caregiver_id") or "unknown",
+                note=payload.get("note") or "",
+            )
+        except KeyError:
+            raise HTTPException(status_code=404, detail="alert event not found")
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+
+    @app.post("/alerts/{event_id}/resolve")
+    def resolve_alert_endpoint(event_id: str, payload: dict | None = None):
+        payload = payload or {}
+        try:
+            return resolve_alert(
+                event_id,
+                caregiver_id=payload.get("caregiver_id") or "unknown",
+                resolution=payload.get("resolution") or "checked_ok",
+                note=payload.get("note") or "",
+            )
+        except KeyError:
+            raise HTTPException(status_code=404, detail="alert event not found")
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
 
     @app.get("/latest-ecg")
     def latest_ecg(patient_id: str | None = None, max_samples: int = 1000):
@@ -2280,7 +2443,7 @@ if FastAPI is not None:
 
         payload = payload or {}
         address = payload.get("address") or DEFAULT_POLAR_ADDRESS
-        chunk_seconds = int(payload.get("chunk_seconds") or 30)
+        chunk_seconds = int(payload.get("chunk_seconds") or 10)
         if chunk_seconds < 5:
             raise HTTPException(status_code=400, detail="chunk_seconds must be >= 5.")
 

@@ -1124,3 +1124,21 @@ sqlite3 /home/custard/elderly_care/data/ecg_monitor.db "VACUUM;"
 ---
 
 Hết.
+ 
+---
+
+## Phu luc: Wi-Fi provisioning production
+
+Neu Raspberry Pi duoc dua sang nha moi va khong con truy cap duoc Wi-Fi cu, su dung captive portal AP Mode -> Client Mode trong:
+
+```text
+docs/wifi-provisioning-production.md
+```
+
+Service production moi:
+
+```text
+elderly-care-wifi-provisioner.service
+```
+
+Trang thai provisioning duoc backend tra trong `/health` tai field `network_provisioning`.
