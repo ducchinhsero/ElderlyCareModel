@@ -1,7 +1,7 @@
 $ErrorActionPreference = "Stop"
-$src = $PSScriptRoot
-$out = Join-Path $src "elderly_care_deploy.zip"
-$tmp = "$env:TEMP\elderly_care_deploy_staging"
+$src = "C:\Users\huyma\Desktop\ElderlyCareModel"
+$out = "C:\Users\huyma\Desktop\elderly_care_deploy.zip"
+$tmp = "C:\Users\huyma\Desktop\_deploy_staging"
 
 Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force $tmp | Out-Null

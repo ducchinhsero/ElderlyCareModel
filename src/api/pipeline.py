@@ -50,7 +50,7 @@ from src.features.ecg_features import (
 )
 from src.features.stress_features import STRESS_WINDOW_SECONDS
 from src.inference.stress_inference import RollingRRBuffer, StressPredictor, unknown_stress
-from src.network.lan_setup import read_lan_setup_status
+from src.network.provisioning import read_network_status
 from src.storage.ecg_storage import (
     build_event_timeline,
     build_events_for_prediction,
@@ -2047,7 +2047,6 @@ if FastAPI is not None:
 
     @app.get("/health")
     def health():
-        network_setup = read_lan_setup_status()
         return {
             "status": "ok",
             "stress_model_loaded": stress_predictor.loaded,
@@ -2083,8 +2082,7 @@ if FastAPI is not None:
             "api_auth_enabled": API_AUTH_ENABLED,
             "api_auth_configured": bool(API_KEY),
             "allowed_origins": ALLOWED_ORIGINS,
-            "network_setup": network_setup,
-            "network_provisioning": network_setup,
+            "network_provisioning": read_network_status(),
             "polar": polar_status,
         }
 

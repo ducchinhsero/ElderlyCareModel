@@ -1127,18 +1127,18 @@ Hết.
  
 ---
 
-## Phu luc: LAN setup production
+## Phu luc: Wi-Fi provisioning production
 
-Khi dua Raspberry Pi sang nha moi, cam Raspberry vao router/switch bang day LAN. App se nhap IP hoac quet LAN de ket noi backend:
-
-```text
-docs/lan-setup-production.md
-```
-
-Backend can bind ra LAN:
+Neu Raspberry Pi duoc dua sang nha moi va khong con truy cap duoc Wi-Fi cu, su dung captive portal AP Mode -> Client Mode trong:
 
 ```text
-uvicorn pipeline:app --host 0.0.0.0 --port 8000 --app-dir .
+docs/wifi-provisioning-production.md
 ```
 
-Trang thai LAN duoc backend tra trong `/health` tai field `network_setup`. Field `network_provisioning` duoc giu tam thoi nhu alias tuong thich.
+Service production moi:
+
+```text
+elderly-care-wifi-provisioner.service
+```
+
+Trang thai provisioning duoc backend tra trong `/health` tai field `network_provisioning`.

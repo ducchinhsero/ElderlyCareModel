@@ -43,11 +43,7 @@ class ApiAuthTest(unittest.TestCase):
         pipeline.API_PUBLIC_PATHS = {"/health"}
         response = TestClient(pipeline.app).get("/health")
         self.assertEqual(response.status_code, 200)
-        payload = response.json()
-        self.assertIn("network_setup", payload)
-        self.assertIn("network_provisioning", payload)
-        self.assertEqual(payload["network_setup"]["mode"], "lan")
-        self.assertEqual(payload["network_provisioning"]["mode"], "lan")
+        self.assertIn("network_provisioning", response.json())
 
     def test_alert_websocket_sends_backlog(self):
         original_get_realtime_alerts = pipeline.get_realtime_alerts
