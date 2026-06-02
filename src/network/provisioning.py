@@ -333,20 +333,40 @@ class NetworkProvisioner:
             raise ValueError("ssid is required.")
         self.write_status("connecting", internet_reachable=False, connected_ssid=ssid)
         self.stop_ap()
-        args = [
-            "device",
+        self.sleep(4)
+        self._run_nmcli("device", "wifi", "rescan", "ifname", self.config.interface, check=False, timeout=25)
+        self.sleep(4)
+        self._run_nmcli("connection", "delete", ssid, check=False, timeout=15)
+        add_args = [
+            "connection",
+            "add",
+            "type",
             "wifi",
-            "connect",
+            "ifname",
+            self.config.interface,
+            "con-name",
+            ssid,
+            "ssid",
             ssid,
         ]
         if password:
-            args.extend(["password", str(password)])
-        args.extend([
+            add_args.extend(["wifi-sec.key-mgmt", "wpa-psk", "wifi-sec.psk", str(password)])
+        add_result = self._run_nmcli(*add_args, check=False, timeout=20)
+        if add_result.returncode != 0:
+            self._last_error = (add_result.stderr or add_result.stdout or "wifi_profile_add_failed").strip()
+            self.start_ap()
+            return self.write_status(
+                "ap",
+                internet_reachable=False,
+                last_error=self._last_error,
+                attempted_ssid=ssid,
+            )
+        result = self._run_nmcli(
+            "connection",
+            "up",
+            ssid,
             "ifname",
             self.config.interface,
-        ])
-        result = self._run_nmcli(
-            *args,
             check=False,
             timeout=self.config.connect_timeout_seconds,
         )
