@@ -161,7 +161,7 @@ def extract_hrv_features(rr_window):
     }
 
 
-def evaluate_signal_quality(ecg_signal, sample_rate_hz, min_seconds=10):
+def evaluate_signal_quality(ecg_signal, sample_rate_hz, min_seconds=8):
     quality_config = get_config_section("signal_quality")
     min_seconds = float(quality_config.get("min_seconds", min_seconds))
     max_nan_ratio = float(quality_config.get("max_nan_ratio", 0.01))
@@ -172,8 +172,10 @@ def evaluate_signal_quality(ecg_signal, sample_rate_hz, min_seconds=10):
     min_valid_rr_ratio = float(quality_config.get("min_valid_rr_ratio", 0.8))
     max_rr_outlier_ratio = float(quality_config.get("max_rr_outlier_ratio", 0.35))
     min_beat_template_correlation = float(quality_config.get("min_beat_template_correlation", 0.35))
+    min_noise_template_correlation = float(quality_config.get("min_noise_template_correlation", 0.65))
+    max_noise_rr_outlier_ratio = float(quality_config.get("max_noise_rr_outlier_ratio", 0.2))
     max_physiological_hr_bpm = float(quality_config.get("max_physiological_hr_bpm", 220.0))
-    min_median_peak_width_ms = float(quality_config.get("min_median_peak_width_ms", 30.0))
+    min_median_peak_width_ms = float(quality_config.get("min_median_peak_width_ms", 15.0))
     max_median_peak_width_ms = float(quality_config.get("max_median_peak_width_ms", 220.0))
 
     ecg = np.asarray(ecg_signal, dtype=float).flatten()
@@ -286,6 +288,12 @@ def evaluate_signal_quality(ecg_signal, sample_rate_hz, min_seconds=10):
     elif beat_template_correlation < min_beat_template_correlation:
         reasons.append("inconsistent ECG beat morphology; possible loose contact or noise")
         score -= 0.55
+    elif (
+        beat_template_correlation < min_noise_template_correlation
+        and float(metrics.get("rr_outlier_ratio") or 1.0) > max_noise_rr_outlier_ratio
+    ):
+        reasons.append("noise-like ECG morphology with unstable RR intervals")
+        score -= 0.75
 
     score = float(max(0.0, min(1.0, score)))
     if score >= 0.75:

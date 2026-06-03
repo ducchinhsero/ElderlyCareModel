@@ -117,7 +117,7 @@
     ]
   },
   "signal_quality": {
-    "min_seconds": 10.0,
+    "min_seconds": 8.0,
     "max_nan_ratio": 0.01,
     "max_zero_ratio": 0.8,
     "min_amplitude_std": 0.05,
@@ -125,8 +125,10 @@
     "min_r_peak_count": 6,
     "min_valid_rr_ratio": 0.8,
     "min_beat_template_correlation": 0.35,
+    "min_noise_template_correlation": 0.65,
+    "max_noise_rr_outlier_ratio": 0.2,
     "max_physiological_hr_bpm": 220.0,
-    "min_median_peak_width_ms": 30.0,
+    "min_median_peak_width_ms": 15.0,
     "max_median_peak_width_ms": 220.0,
     "max_rr_outlier_ratio": 0.472,
     "observed_by_state": {

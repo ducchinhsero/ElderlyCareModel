@@ -951,6 +951,21 @@ def _estimate_heart_rate_from_signal(ecg, sample_rate_hz, feature_rows=None):
     return float(60000.0 / np.mean(rr_ms))
 
 
+def _quality_metrics_support_hr(signal_quality):
+    metrics = (signal_quality or {}).get("metrics") or {}
+    r_peak_count = int(metrics.get("r_peak_count") or 0)
+    valid_rr_ratio = float(metrics.get("valid_rr_ratio") or 0.0)
+    r_peak_rate_bpm = float(metrics.get("r_peak_rate_bpm") or 0.0)
+    beat_template_correlation = metrics.get("beat_template_correlation")
+    if beat_template_correlation is not None and float(beat_template_correlation) < 0.65:
+        return False
+    return (
+        r_peak_count >= 6
+        and valid_rr_ratio >= 0.8
+        and 35.0 <= r_peak_rate_bpm <= 220.0
+    )
+
+
 def predict_ecg(
     ecg_samples,
     sample_rate_hz,
@@ -971,10 +986,12 @@ def predict_ecg(
     result_timestamp = timestamp or datetime.now().astimezone().isoformat()
     signal_quality = evaluate_signal_quality(ecg, float(sample_rate_hz))
     if signal_quality["label"] == "poor":
+        heart_rate_bpm = None
+        if _quality_metrics_support_hr(signal_quality):
+            heart_rate_bpm = _estimate_heart_rate_from_signal(ecg, float(sample_rate_hz))
         stress, anomaly, risk = _unknown_outputs_for_quality(signal_quality)
         rhythm = _unknown_rhythm("Signal quality is too poor for rhythm classification.")
         ectopy = _unknown_ectopy("Signal quality is too poor for PVC/PAC classification.")
-        hr_event = _unknown_hr_event("Signal quality is too poor for heart-rate event detection.")
         af_episode = _unknown_af_episode("Signal quality is too poor for AF episode tracking.")
         rhythm_alert = {
             "level": "unknown",
@@ -982,17 +999,28 @@ def predict_ecg(
         }
         sensor_context = summarize_acc_window(
             acc_samples,
-            heart_rate_bpm=None,
+            heart_rate_bpm=heart_rate_bpm,
             sample_rate_hz=acc_sample_rate_hz or FS_ACC_HZ,
         )
+        activity_state = (sensor_context or {}).get("activity_state") or "unknown"
+        if heart_rate_bpm is None:
+            hr_event = _unknown_hr_event("Signal quality is too poor for heart-rate event detection.")
+        else:
+            hr_event = detect_hr_event(
+                heart_rate_bpm,
+                activity_state=activity_state,
+                duration_sec=float(ecg.size) / float(sample_rate_hz),
+            )
         alert_level, message = "medium", "Poor ECG signal quality. Prediction skipped; check Polar H10 strap contact."
+        if heart_rate_bpm is not None:
+            message = "ECG signal quality is limited. Heart rate estimated; model prediction skipped."
         alert_level, message = _apply_sensor_context_alert(alert_level, message, sensor_context)
         return {
             "patient_id": patient_id,
             "timestamp": result_timestamp,
             "sample_rate_hz": float(sample_rate_hz),
             "window_count": 0,
-            "heart_rate_bpm": None,
+            "heart_rate_bpm": None if heart_rate_bpm is None else round(heart_rate_bpm, 2),
             "stress": stress,
             "anomaly": anomaly,
             "rhythm": rhythm,

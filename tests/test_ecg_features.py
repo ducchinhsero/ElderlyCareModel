@@ -24,6 +24,16 @@ def synthetic_ecg(sample_rate_hz=130, seconds=30):
     return signal
 
 
+def synthetic_narrow_polar_ecg(sample_rate_hz=130, seconds=10):
+    total = sample_rate_hz * seconds
+    ecg = np.zeros(total, dtype=float)
+    x = np.arange(total)
+    for peak in np.arange(sample_rate_hz, total - sample_rate_hz, sample_rate_hz):
+        ecg += 1200.0 * np.exp(-0.5 * ((x - peak) / 1.2) ** 2)
+        ecg += 250.0 * np.exp(-0.5 * ((x - peak - 10) / 2.5) ** 2)
+    return ecg
+
+
 class ECGFeatureTests(unittest.TestCase):
     def test_stress_features_have_expected_schema(self):
         rr_ms = np.array([800 + ((i % 5) - 2) * 8 for i in range(360)], dtype=float)
@@ -49,6 +59,18 @@ class ECGFeatureTests(unittest.TestCase):
     def test_signal_quality_good_for_synthetic_ecg(self):
         quality = evaluate_signal_quality(synthetic_ecg(), sample_rate_hz=130)
         self.assertIn(quality["label"], {"good", "fair"})
+
+    def test_signal_quality_accepts_narrow_consistent_polar_peaks(self):
+        quality = evaluate_signal_quality(synthetic_narrow_polar_ecg(), sample_rate_hz=130)
+        self.assertIn(quality["label"], {"good", "fair"})
+        self.assertNotIn(
+            "R-peak candidates are too narrow; possible noise or loose contact",
+            quality["reasons"],
+        )
+
+    def test_signal_quality_accepts_slightly_short_ble_window(self):
+        quality = evaluate_signal_quality(synthetic_narrow_polar_ecg(seconds=10)[:1241], sample_rate_hz=130)
+        self.assertNotEqual(quality["label"], "poor")
 
     def test_signal_quality_poor_for_flatline(self):
         quality = evaluate_signal_quality(np.zeros(3900), sample_rate_hz=130)
