@@ -992,7 +992,7 @@ def build_events_for_prediction(item):
             _make_event(
                 item,
                 "poor_signal",
-                "unknown",
+                "medium",
                 quality,
                 "; ".join(signal_quality.get("reasons") or []) or "Poor ECG signal quality.",
                 {"signal_quality": signal_quality},

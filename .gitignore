@@ -13,6 +13,7 @@ __pycache__/
 *.db
 *.sqlite
 *.sqlite3
+*.zip
 uvicorn_*.log
 logs/
 dataset/realtime_logs/

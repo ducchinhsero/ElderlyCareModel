@@ -1,0 +1,22 @@
+[Unit]
+Description=Elderly Care Edge AI Backend
+After=bluetooth.service NetworkManager.service
+Wants=bluetooth.service NetworkManager.service
+
+[Service]
+Type=simple
+User=elcaprj
+Group=elcaprj
+WorkingDirectory=/home/elcaprj/elderly_care
+EnvironmentFile=/home/elcaprj/elderly_care/.env
+ExecStartPre=/bin/mkdir -p /home/elcaprj/elderly_care/logs /home/elcaprj/elderly_care/data
+ExecStart=/home/elcaprj/elderly_care/.venv/bin/uvicorn src.api.pipeline:app --host 0.0.0.0 --port 8000
+Restart=always
+RestartSec=10
+StandardOutput=append:/home/elcaprj/elderly_care/logs/uvicorn.log
+StandardError=append:/home/elcaprj/elderly_care/logs/uvicorn.err.log
+AmbientCapabilities=CAP_NET_RAW CAP_NET_ADMIN
+CapabilityBoundingSet=CAP_NET_RAW CAP_NET_ADMIN
+
+[Install]
+WantedBy=multi-user.target

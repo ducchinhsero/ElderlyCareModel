@@ -1,4 +1,5 @@
 import unittest
+from datetime import datetime, timedelta, timezone
 
 from fastapi.testclient import TestClient
 
@@ -10,11 +11,17 @@ class ApiAuthTest(unittest.TestCase):
         self.original_enabled = pipeline.API_AUTH_ENABLED
         self.original_key = pipeline.API_KEY
         self.original_public_paths = set(pipeline.API_PUBLIC_PATHS)
+        self.original_alert_delivery_status = pipeline.alert_delivery_status
+        self.original_get_latest_ecg = pipeline.get_latest_ecg
+        self.original_latest_result = pipeline.latest_result
 
     def tearDown(self):
         pipeline.API_AUTH_ENABLED = self.original_enabled
         pipeline.API_KEY = self.original_key
         pipeline.API_PUBLIC_PATHS = self.original_public_paths
+        pipeline.alert_delivery_status = self.original_alert_delivery_status
+        pipeline.get_latest_ecg = self.original_get_latest_ecg
+        pipeline.latest_result = self.original_latest_result
 
     def test_auth_disabled_keeps_existing_behavior(self):
         pipeline.API_AUTH_ENABLED = False
@@ -44,6 +51,51 @@ class ApiAuthTest(unittest.TestCase):
         response = TestClient(pipeline.app).get("/health")
         self.assertEqual(response.status_code, 200)
         self.assertIn("network_provisioning", response.json())
+
+    def test_health_reports_storage_error_instead_of_crashing(self):
+        pipeline.API_AUTH_ENABLED = False
+
+        def broken_alert_delivery_status():
+            raise PermissionError("bad storage path")
+
+        pipeline.alert_delivery_status = broken_alert_delivery_status
+        response = TestClient(pipeline.app).get("/health")
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body["status"], "ok")
+        self.assertEqual(body["alert_delivery"]["status"], "error")
+        self.assertIn("bad storage path", body["alert_delivery"]["error"])
+
+    def test_latest_ecg_reports_storage_error_instead_of_crashing(self):
+        pipeline.API_AUTH_ENABLED = False
+
+        def broken_latest_ecg(**kwargs):
+            raise PermissionError("bad storage path")
+
+        pipeline.get_latest_ecg = broken_latest_ecg
+        response = TestClient(pipeline.app).get("/latest-ecg")
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body["samples"], [])
+        self.assertEqual(body["source"], "storage_error")
+        self.assertIn("bad storage path", body["reason"])
+
+    def test_latest_result_reports_freshness_metadata(self):
+        pipeline.API_AUTH_ENABLED = False
+        pipeline.latest_result = {
+            "patient_id": "polar_h10",
+            "timestamp": (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat(),
+            "heart_rate_bpm": 72.0,
+        }
+        response = TestClient(pipeline.app).get("/latest-result")
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertFalse(body["latest_result_fresh"])
+        self.assertGreater(body["latest_result_age_seconds"], 90)
+
+    def test_pipeline_does_not_reference_missing_record_result_alias(self):
+        source = pipeline.__loader__.get_source(pipeline.__name__)
+        self.assertNotIn("_record_result(", source)
 
     def test_alert_websocket_sends_backlog(self):
         original_get_realtime_alerts = pipeline.get_realtime_alerts

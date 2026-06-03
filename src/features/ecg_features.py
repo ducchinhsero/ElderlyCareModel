@@ -61,6 +61,51 @@ def detect_r_peaks(ecg_signal, sample_rate_hz):
     return peaks
 
 
+
+
+def _beat_template_correlation(ecg_signal, peaks, sample_rate_hz, max_beats=20):
+    ecg = np.asarray(ecg_signal, dtype=float).flatten()
+    peaks = np.asarray(peaks, dtype=int).flatten()
+    if ecg.size == 0 or peaks.size < 3:
+        return None
+
+    before = int(0.12 * float(sample_rate_hz))
+    after = int(0.24 * float(sample_rate_hz))
+    beats = []
+    for peak in peaks[:max_beats]:
+        start = int(peak) - before
+        end = int(peak) + after
+        if start < 0 or end > ecg.size:
+            continue
+        beat = np.asarray(ecg[start:end], dtype=float)
+        beat = beat - float(np.mean(beat))
+        std = float(np.std(beat))
+        if std <= 1e-9:
+            continue
+        beats.append(beat / std)
+
+    if len(beats) < 3:
+        return None
+
+    min_len = min(len(beat) for beat in beats)
+    matrix = np.vstack([beat[:min_len] for beat in beats])
+    template = np.median(matrix, axis=0)
+    template = template - float(np.mean(template))
+    template_std = float(np.std(template))
+    if template_std <= 1e-9:
+        return None
+    template = template / template_std
+
+    correlations = []
+    for beat in matrix:
+        corr = np.corrcoef(beat, template)[0, 1]
+        if np.isfinite(corr):
+            correlations.append(float(corr))
+    if not correlations:
+        return None
+    return float(np.median(correlations))
+
+
 def rr_intervals_ms_from_peaks(peaks, sample_rate_hz):
     peaks = np.asarray(peaks, dtype=int).flatten()
     if peaks.size < 2:
@@ -126,6 +171,10 @@ def evaluate_signal_quality(ecg_signal, sample_rate_hz, min_seconds=10):
     min_r_peak_count = int(quality_config.get("min_r_peak_count", 6))
     min_valid_rr_ratio = float(quality_config.get("min_valid_rr_ratio", 0.8))
     max_rr_outlier_ratio = float(quality_config.get("max_rr_outlier_ratio", 0.35))
+    min_beat_template_correlation = float(quality_config.get("min_beat_template_correlation", 0.35))
+    max_physiological_hr_bpm = float(quality_config.get("max_physiological_hr_bpm", 220.0))
+    min_median_peak_width_ms = float(quality_config.get("min_median_peak_width_ms", 30.0))
+    max_median_peak_width_ms = float(quality_config.get("max_median_peak_width_ms", 220.0))
 
     ecg = np.asarray(ecg_signal, dtype=float).flatten()
     metrics = {
@@ -136,8 +185,11 @@ def evaluate_signal_quality(ecg_signal, sample_rate_hz, min_seconds=10):
         "amplitude_std": 0.0,
         "amplitude_range": 0.0,
         "r_peak_count": 0,
+        "r_peak_rate_bpm": 0.0,
         "valid_rr_ratio": 0.0,
         "rr_outlier_ratio": 1.0,
+        "beat_template_correlation": None,
+        "median_peak_width_ms": None,
     }
     reasons = []
     score = 1.0
@@ -180,10 +232,29 @@ def evaluate_signal_quality(ecg_signal, sample_rate_hz, min_seconds=10):
     peaks = detect_r_peaks(filtered, sample_rate_hz)
     rr_ms = rr_intervals_ms_from_peaks(peaks, sample_rate_hz)
     metrics["r_peak_count"] = int(len(peaks))
+    duration = max(float(metrics["duration_seconds"]), 1e-9)
+    r_peak_rate_bpm = float(len(peaks) * 60.0 / duration)
+    metrics["r_peak_rate_bpm"] = r_peak_rate_bpm
 
     if len(peaks) < min_r_peak_count:
         reasons.append("not enough R-peaks detected")
         score -= 0.35
+    if r_peak_rate_bpm > max_physiological_hr_bpm:
+        reasons.append("too many R-peak candidates for physiological ECG")
+        score -= 0.55
+    if len(peaks) >= 3:
+        try:
+            widths = signal.peak_widths(filtered, peaks, rel_height=0.5)[0]
+            median_peak_width_ms = float(np.median(widths) * 1000.0 / float(sample_rate_hz))
+            metrics["median_peak_width_ms"] = median_peak_width_ms
+            if median_peak_width_ms < min_median_peak_width_ms:
+                reasons.append("R-peak candidates are too narrow; possible noise or loose contact")
+                score -= 0.55
+            elif median_peak_width_ms > max_median_peak_width_ms:
+                reasons.append("R-peak candidates are too wide; possible motion artifact")
+                score -= 0.35
+        except Exception:
+            metrics["median_peak_width_ms"] = None
 
     if rr_ms.size > 0:
         valid_rr = (rr_ms >= 300) & (rr_ms <= 2000)
@@ -201,10 +272,20 @@ def evaluate_signal_quality(ecg_signal, sample_rate_hz, min_seconds=10):
                 metrics["rr_outlier_ratio"] = outlier_ratio
                 if outlier_ratio > max_rr_outlier_ratio:
                     reasons.append("unstable RR intervals")
-                    score -= 0.25
+                    score -= 0.45
     else:
         reasons.append("no RR intervals detected")
         score -= 0.35
+
+    beat_template_correlation = _beat_template_correlation(filtered, peaks, sample_rate_hz)
+    metrics["beat_template_correlation"] = beat_template_correlation
+    if beat_template_correlation is None:
+        if len(peaks) >= min_r_peak_count:
+            reasons.append("unable to verify ECG beat shape consistency")
+            score -= 0.2
+    elif beat_template_correlation < min_beat_template_correlation:
+        reasons.append("inconsistent ECG beat morphology; possible loose contact or noise")
+        score -= 0.55
 
     score = float(max(0.0, min(1.0, score)))
     if score >= 0.75:

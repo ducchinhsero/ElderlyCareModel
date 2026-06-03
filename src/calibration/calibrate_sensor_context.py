@@ -197,6 +197,10 @@ def _build_signal_quality_config(quality_rows):
         "min_amplitude_range": round(float(min_amplitude_range), 3),
         "min_r_peak_count": 6,
         "min_valid_rr_ratio": 0.8,
+        "min_beat_template_correlation": 0.35,
+        "max_physiological_hr_bpm": 220.0,
+        "min_median_peak_width_ms": 30.0,
+        "max_median_peak_width_ms": 220.0,
         "max_rr_outlier_ratio": round(float(max_rr_outlier), 3),
         "observed_by_state": {
             state: {

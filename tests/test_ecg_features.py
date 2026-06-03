@@ -54,6 +54,25 @@ class ECGFeatureTests(unittest.TestCase):
         quality = evaluate_signal_quality(np.zeros(3900), sample_rate_hz=130)
         self.assertEqual(quality["label"], "poor")
 
+    def test_signal_quality_poor_for_random_noise_contact_loss(self):
+        rng = np.random.default_rng(1)
+        noisy_signal = rng.normal(0, 200, 3900)
+        quality = evaluate_signal_quality(noisy_signal, sample_rate_hz=130)
+        self.assertEqual(quality["label"], "poor")
+        self.assertTrue(
+            any("noise" in reason or "loose contact" in reason for reason in quality["reasons"])
+        )
+
+    def test_poor_signal_result_clears_heart_rate(self):
+        result = pipeline._poor_signal_result(
+            patient_id="polar_h10",
+            sample_rate_hz=130,
+            reason="No ECG samples received.",
+        )
+        self.assertEqual(result["signal_quality"]["label"], "poor")
+        self.assertIsNone(result["heart_rate_bpm"])
+        self.assertEqual(result["alert_level"], "medium")
+
     def test_synthetic_ecg_can_supply_baseline_rows(self):
         rows = extract_anomaly_feature_rows(
             synthetic_ecg(seconds=120),

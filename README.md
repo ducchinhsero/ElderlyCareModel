@@ -27,6 +27,22 @@ System documentation:
 - `docs/model-storage-alert-system.md`: model choice, storage flow, alert flow.
 - `docs/so-sanh-rhythm-cnn-feature-model.md`: detailed CNN vs feature rhythm comparison.
 - `docs/wifi-provisioning-production.md`: AP Mode -> Client Mode Wi-Fi setup for Raspberry Pi production.
+- `docs/deploy-raspberry-pi.md`: Raspberry Pi deployment and production installer.
+
+Raspberry production install:
+
+```bash
+cd /home/elcaprj/elderly_care
+bash scripts/install_pi_production.sh
+```
+
+This one-shot installer sets hostname `elderlycare`, enables `elderlycare.local`, installs system/Python dependencies, creates `.env`, enables Polar auto-start, and installs the backend + Wi-Fi provisioning systemd services.
+
+Optional one-line production configuration:
+
+```bash
+POLAR_H10_MAC=24:AC:AC:13:EB:86 MONGODB_SYNC_ENABLED=1 MONGODB_URI='mongodb+srv://...' bash scripts/install_pi_production.sh
+```
 
 Install dependencies:
 

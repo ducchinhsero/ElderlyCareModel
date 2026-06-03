@@ -26,7 +26,7 @@ class FakeRunner:
             if not self.connect_fails:
                 self.connected = True
                 return CompletedProcess(args, 0, "ok", "")
-            return CompletedProcess(args, 10, "", "failed")
+            return CompletedProcess(args, 10, "", "bad password")
         if "wifi hotspot" in joined:
             self.hotspot_started = True
             self.connected = False

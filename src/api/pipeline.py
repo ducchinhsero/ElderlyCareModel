@@ -172,6 +172,23 @@ def _load_json_config(path):
         return {}
 
 
+def _env_bool(name, default=False):
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _env_int(name, default):
+    value = os.getenv(name)
+    if value is None or not value.strip():
+        return default
+    try:
+        return int(value)
+    except ValueError:
+        return default
+
+
 rhythm_decision_config = _load_json_config(RHYTHM_DECISION_CONFIG_PATH)
 RHYTHM_AFIB_DECISION_MODE = os.getenv(
     "RHYTHM_AFIB_DECISION_MODE",
@@ -203,7 +220,7 @@ ALERT_WEBHOOK_LEVELS = {
     for item in os.getenv("ALERT_WEBHOOK_LEVELS", "medium,high,critical").split(",")
     if item.strip()
 }
-API_AUTH_ENABLED = os.getenv("API_AUTH_ENABLED", "0").strip().lower() in {"1", "true", "yes", "on"}
+API_AUTH_ENABLED = _env_bool("API_AUTH_ENABLED", default=False)
 API_KEY = os.getenv("API_KEY", "").strip()
 API_PUBLIC_PATHS = {
     item.strip()
@@ -228,6 +245,12 @@ DEFAULT_POLAR_ADDRESS = (
     or os.getenv("POLAR_ADDRESS")
     or "24:AC:AC:13:EB:86"
 )
+POLAR_AUTO_START = _env_bool("POLAR_AUTO_START", default=False)
+POLAR_AUTO_START_CHUNK_SECONDS = max(5, _env_int("POLAR_AUTO_START_CHUNK_SECONDS", 10))
+POLAR_ENABLE_HR_STREAM = _env_bool("POLAR_ENABLE_HR_STREAM", default=True)
+POLAR_ENABLE_ACC_STREAM = _env_bool("POLAR_ENABLE_ACC_STREAM", default=True)
+POLAR_RECONNECT_SECONDS = max(3, _env_int("POLAR_RECONNECT_SECONDS", 10))
+POLAR_CONNECT_TIMEOUT_SECONDS = max(5, _env_int("POLAR_CONNECT_TIMEOUT_SECONDS", 20))
 TYPE_ECG = 0x00
 # Polar H10 PMD command for ECG at 130 Hz. This command is verified by the
 # standalone collector in D:\DATN\PolarH10\only_ecg.py.
@@ -286,6 +309,7 @@ ectopy_predictor = EctopyFeaturePredictor(
 anomaly_feature_columns = _load_schema(ANOMALY_SCHEMA_PATH, ANOMALY_FEATURE_COLUMNS)
 latest_result = None
 prediction_history = []
+LATEST_RESULT_FRESH_SECONDS = float(os.getenv("LATEST_RESULT_FRESH_SECONDS", "90"))
 vitals_websocket_clients = set()
 alert_websocket_clients = {}
 polar_task = None
@@ -563,6 +587,31 @@ def _publish_mqtt(result):
         print(f"MQTT publish_alert error (non-fatal): {exc}")
 
 
+def _format_exception(exc):
+    text = str(exc).strip()
+    if text:
+        return f"{type(exc).__name__}: {text}"
+    return repr(exc)
+
+
+def _latest_result_age_seconds(result):
+    if not result:
+        return None
+    timestamp_epoch = timestamp_to_epoch(result.get("timestamp"))
+    if timestamp_epoch is None:
+        return None
+    return max(0.0, datetime.now().astimezone().timestamp() - float(timestamp_epoch))
+
+
+def _latest_result_freshness(result):
+    age = _latest_result_age_seconds(result)
+    return {
+        "latest_result_age_seconds": None if age is None else round(age, 3),
+        "latest_result_fresh": bool(age is not None and age <= LATEST_RESULT_FRESH_SECONDS),
+        "latest_result_fresh_seconds": LATEST_RESULT_FRESH_SECONDS,
+    }
+
+
 try:
     stored_history = list(reversed(get_history(days=7, limit=50)))
     if stored_history:
@@ -804,6 +853,59 @@ def _unknown_outputs_for_quality(signal_quality):
     return stress, anomaly, risk
 
 
+def _poor_signal_result(patient_id, sample_rate_hz, reason, acc_samples=None, acc_sample_rate_hz=None):
+    signal_quality = {
+        "label": "poor",
+        "score": 0.0,
+        "reasons": [reason],
+        "metrics": {
+            "sample_count": 0,
+            "duration_seconds": 0.0,
+            "nan_ratio": 1.0,
+            "zero_ratio": 1.0,
+            "amplitude_std": 0.0,
+            "amplitude_range": 0.0,
+            "r_peak_count": 0,
+            "r_peak_rate_bpm": 0.0,
+            "valid_rr_ratio": 0.0,
+            "rr_outlier_ratio": 1.0,
+            "beat_template_correlation": None,
+            "median_peak_width_ms": None,
+        },
+    }
+    stress, anomaly, risk = _unknown_outputs_for_quality(signal_quality)
+    sensor_context = summarize_acc_window(
+        acc_samples,
+        heart_rate_bpm=None,
+        sample_rate_hz=acc_sample_rate_hz or FS_ACC_HZ,
+    )
+    alert_level, message = _apply_sensor_context_alert(
+        "medium",
+        "Poor ECG signal quality. Check Polar H10 strap contact and fit.",
+        sensor_context,
+    )
+    timestamp = datetime.now().astimezone().isoformat()
+    return {
+        "patient_id": patient_id,
+        "timestamp": timestamp,
+        "sample_rate_hz": float(sample_rate_hz),
+        "window_count": 0,
+        "heart_rate_bpm": None,
+        "stress": stress,
+        "anomaly": anomaly,
+        "rhythm": _unknown_rhythm("No reliable ECG samples were received."),
+        "ectopy": _unknown_ectopy("No reliable ECG samples were received."),
+        "hr_event": _unknown_hr_event("No reliable ECG samples were received."),
+        "af_episode": _unknown_af_episode("No reliable ECG samples were received."),
+        "rhythm_alert": {"level": "unknown", "message": "No reliable ECG samples were received."},
+        "signal_quality": signal_quality,
+        "risk": risk,
+        "sensor_context": sensor_context,
+        "alert_level": alert_level,
+        "message": message,
+    }
+
+
 def _risk_with_current(patient_id, anomaly, stress, signal_quality):
     if anomaly.get("value") is None:
         return {
@@ -883,7 +985,7 @@ def predict_ecg(
             heart_rate_bpm=None,
             sample_rate_hz=acc_sample_rate_hz or FS_ACC_HZ,
         )
-        alert_level, message = "unknown", "Poor ECG signal quality. Prediction skipped."
+        alert_level, message = "medium", "Poor ECG signal quality. Prediction skipped; check Polar H10 strap contact."
         alert_level, message = _apply_sensor_context_alert(alert_level, message, sensor_context)
         return {
             "patient_id": patient_id,
@@ -1170,33 +1272,51 @@ async def bluetooth_prediction_stream(address, chunk_seconds=10):
                 pmd_acc_packets_seen += 1
                 collected_acc.extend(samples)
 
-    print(f"Connecting to Polar H10 at {address}...")
+    print(
+        f"Connecting to Polar H10 at {address} "
+        f"(HR={'on' if POLAR_ENABLE_HR_STREAM else 'off'}, "
+        f"ACC={'on' if POLAR_ENABLE_ACC_STREAM else 'off'})..."
+    )
     polar_status["connect_attempts"] = int(polar_status.get("connect_attempts") or 0) + 1
-    async with BleakClient(address, timeout=20) as client:
+
+    def disconnected_callback(_client):
+        polar_status["last_disconnected_at"] = datetime.now().astimezone().isoformat()
+        print("Polar H10 BLE disconnected callback fired.")
+
+    async with BleakClient(
+        address,
+        timeout=POLAR_CONNECT_TIMEOUT_SECONDS,
+        disconnected_callback=disconnected_callback,
+    ) as client:
         if not client.is_connected:
             raise RuntimeError("Unable to connect to Polar H10")
         polar_status["successful_connections"] = int(polar_status.get("successful_connections") or 0) + 1
         polar_status["last_connected_at"] = datetime.now().astimezone().isoformat()
 
         hr_notify_started = False
-        try:
-            await client.start_notify(HR_UUID, hr_callback)
-            hr_notify_started = True
-            print("HR/RR stream enabled.")
-        except Exception as exc:
-            print(f"HR/RR stream unavailable, continuing with ECG only: {exc}")
-        await client.start_notify(PMD_DATA, pmd_callback)
-        print("PMD data notifications enabled.")
+        if POLAR_ENABLE_HR_STREAM:
+            try:
+                await client.start_notify(HR_UUID, hr_callback)
+                hr_notify_started = True
+                print("HR/RR stream enabled.")
+            except Exception as exc:
+                print(f"HR/RR stream unavailable, continuing with ECG only: {_format_exception(exc)}")
         await client.write_gatt_char(PMD_CONTROL, ECG_START_CMD, response=True)
         await asyncio.sleep(0.3)
         print("ECG stream enabled.")
-        try:
-            await client.write_gatt_char(PMD_CONTROL, ACC_START_CMD, response=True)
-            await asyncio.sleep(0.3)
-            print("ACC stream enabled.")
-        except Exception as exc:
-            polar_status["last_error"] = f"ACC stream unavailable, continuing ECG-only: {exc}"
-            print(polar_status["last_error"])
+        await client.start_notify(PMD_DATA, pmd_callback)
+        print("PMD data notifications enabled.")
+        if POLAR_ENABLE_ACC_STREAM:
+            try:
+                await client.write_gatt_char(PMD_CONTROL, ACC_START_CMD, response=True)
+                await asyncio.sleep(0.3)
+                print("ACC stream enabled.")
+            except Exception as exc:
+                polar_status["last_error"] = (
+                    "ACC stream unavailable, continuing ECG-only: "
+                    f"{_format_exception(exc)}"
+                )
+                print(polar_status["last_error"])
 
         try:
             while client.is_connected:
@@ -1237,6 +1357,22 @@ async def bluetooth_prediction_stream(address, chunk_seconds=10):
                         "No ECG samples received in this window. Continuing on the same "
                         "connection; check whether another app is using the PMD stream."
                     )
+                    result = _poor_signal_result(
+                        patient_id="polar_h10",
+                        sample_rate_hz=REALTIME_SAMPLE_RATE_HZ,
+                        reason="No ECG samples received; Polar H10 may be loose, not worn, or PMD stream is unavailable.",
+                        acc_samples=acc_signal,
+                        acc_sample_rate_hz=FS_ACC_HZ if acc_signal else None,
+                    )
+                    record_result(
+                        result,
+                        ecg_samples=[],
+                        sample_rate_hz=REALTIME_SAMPLE_RATE_HZ,
+                        acc_samples=acc_signal,
+                        acc_sample_rate_hz=FS_ACC_HZ if acc_signal else None,
+                    )
+                    polar_status["last_update"] = result["timestamp"]
+                    polar_status["last_prediction_at"] = result["timestamp"]
                     continue
 
                 result = predict_ecg(
@@ -1298,9 +1434,13 @@ async def polar_background_collector(address, chunk_seconds=10):
             except Exception as exc:
                 if seen_successful_connection or int(polar_status.get("successful_connections") or 0) > 0:
                     polar_status["reconnect_count"] = int(polar_status.get("reconnect_count") or 0) + 1
-                polar_status["last_error"] = str(exc)
-                print(f"Polar background collector error: {exc}. Reconnecting in 10 seconds.")
-                await asyncio.sleep(10)
+                error_text = _format_exception(exc)
+                polar_status["last_error"] = error_text
+                print(
+                    f"Polar background collector error: {error_text}. "
+                    f"Reconnecting in {POLAR_RECONNECT_SECONDS} seconds."
+                )
+                await asyncio.sleep(POLAR_RECONNECT_SECONDS)
     finally:
         polar_status["running"] = False
         polar_status["stopped_at"] = datetime.now().astimezone().isoformat()
@@ -1315,8 +1455,11 @@ async def bluetooth_demo_loop(address=None):
             print("Stopping Bluetooth demo.")
             break
         except Exception as exc:
-            print(f"Bluetooth demo error: {exc}. Reconnecting in 10 seconds.")
-            await asyncio.sleep(10)
+            print(
+                f"Bluetooth demo error: {_format_exception(exc)}. "
+                f"Reconnecting in {POLAR_RECONNECT_SECONDS} seconds."
+            )
+            await asyncio.sleep(POLAR_RECONNECT_SECONDS)
 
 
 if FastAPI is not None:
@@ -1358,6 +1501,7 @@ if FastAPI is not None:
 
     @app.on_event("startup")
     async def startup_background_sync():
+        global polar_task
         # Warm up MQTT connection on boot so the first prediction doesn't pay
         # the connect latency. Non-blocking — paho dials in a thread.
         if mqtt_publisher.is_enabled():
@@ -1367,9 +1511,30 @@ if FastAPI is not None:
         config = BackgroundSyncConfig.from_env()
         if config.enabled:
             await start_background_sync_scheduler(config)
+        if POLAR_AUTO_START:
+            if BleakClient is None:
+                polar_status["last_error"] = "POLAR_AUTO_START is enabled but bleak is not installed."
+                print(polar_status["last_error"])
+            elif polar_task is None or polar_task.done():
+                polar_task = asyncio.create_task(
+                    polar_background_collector(
+                        DEFAULT_POLAR_ADDRESS,
+                        chunk_seconds=POLAR_AUTO_START_CHUNK_SECONDS,
+                    )
+                )
+                polar_status["address"] = DEFAULT_POLAR_ADDRESS
+                polar_status["auto_start"] = True
 
     @app.on_event("shutdown")
     async def shutdown_background_sync():
+        global polar_task
+        if polar_task is not None and not polar_task.done():
+            polar_task.cancel()
+            try:
+                await polar_task
+            except asyncio.CancelledError:
+                pass
+            polar_task = None
         await stop_background_sync_scheduler()
         # Publish graceful 'offline' marker before tearing down the client,
         # so subscribers see a clean goodbye instead of LWT timeout.
@@ -2047,6 +2212,31 @@ if FastAPI is not None:
 
     @app.get("/health")
     def health():
+        try:
+            sensor_context_loaded = bool(load_sensor_context_config())
+            sensor_context_error = None
+        except Exception as exc:  # noqa: BLE001
+            sensor_context_loaded = False
+            sensor_context_error = str(exc)
+        try:
+            alert_delivery = dict(alert_delivery_status())
+        except Exception as exc:  # noqa: BLE001
+            alert_delivery = {
+                "status": "error",
+                "error": str(exc),
+                "unacknowledged_urgent_count": None,
+                "webhook_outbox": {},
+            }
+        alert_delivery["websocket_alert_clients"] = len(alert_websocket_clients)
+        try:
+            network_provisioning = read_network_status()
+        except Exception as exc:  # noqa: BLE001
+            network_provisioning = {
+                "mode": "unknown",
+                "connected_ssid": None,
+                "internet_reachable": None,
+                "last_error": str(exc),
+            }
         return {
             "status": "ok",
             "stress_model_loaded": stress_predictor.loaded,
@@ -2066,15 +2256,13 @@ if FastAPI is not None:
             "rhythm_decision_config_path": RHYTHM_DECISION_CONFIG_PATH,
             "rhythm_decision_config_loaded": bool(rhythm_decision_config),
             "sensor_context_config_path": sensor_context_config_path(),
-            "sensor_context_config_loaded": bool(load_sensor_context_config()),
+            "sensor_context_config_loaded": sensor_context_loaded,
+            "sensor_context_config_error": sensor_context_error,
             "mongodb_sync_configured": is_mongodb_configured(),
             "mongodb_sync_scheduler": get_background_sync_status(),
             "alert_webhook_configured": bool(ALERT_WEBHOOK_URL),
             "alert_webhook_levels": sorted(ALERT_WEBHOOK_LEVELS),
-            "alert_delivery": {
-                **alert_delivery_status(),
-                "websocket_alert_clients": len(alert_websocket_clients),
-            },
+            "alert_delivery": alert_delivery,
             "mqtt_enabled": mqtt_publisher.is_enabled(),
             "mqtt_connected": mqtt_publisher.is_connected(),
             "mqtt_host": f"{os.getenv('MQTT_HOST', 'localhost')}:{os.getenv('MQTT_PORT', '1883')}",
@@ -2082,7 +2270,7 @@ if FastAPI is not None:
             "api_auth_enabled": API_AUTH_ENABLED,
             "api_auth_configured": bool(API_KEY),
             "allowed_origins": ALLOWED_ORIGINS,
-            "network_provisioning": read_network_status(),
+            "network_provisioning": network_provisioning,
             "polar": polar_status,
         }
 
@@ -2096,6 +2284,7 @@ if FastAPI is not None:
             "latest_result": latest_result,
             "history": prediction_history,
             "polar": polar_status,
+            **_latest_result_freshness(latest_result),
         }
 
     @app.websocket("/ws/vitals")
@@ -2199,6 +2388,13 @@ if FastAPI is not None:
             return get_latest_ecg(patient_id=patient_id, max_samples=max_samples)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc))
+        except Exception as exc:  # noqa: BLE001
+            return {
+                "prediction": None,
+                "samples": [],
+                "source": "storage_error",
+                "reason": str(exc),
+            }
 
     @app.get("/history")
     def history(patient_id: str | None = None, days: float = 1, limit: int = 100):
@@ -2304,7 +2500,10 @@ if FastAPI is not None:
 
     @app.get("/storage/status")
     def get_storage_status():
-        return storage_status()
+        try:
+            return storage_status()
+        except Exception as exc:  # noqa: BLE001
+            return {"status": "error", "error": str(exc)}
 
     @app.get("/storage/raw-chunks")
     def storage_raw_chunks(

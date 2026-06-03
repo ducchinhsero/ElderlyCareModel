@@ -90,19 +90,20 @@ Output cuối cùng:
 Trên máy phát triển (Windows), chạy script `pack_for_pi.ps1` ở root project:
 
 ```powershell
-& "C:\Users\<user>\Desktop\ElderlyCareModel\pack_for_pi.ps1"
+cd D:\DATN\elderly_care-amine\elderly_care-amine
+.\pack_for_pi.ps1
 ```
 
 Script này:
 
 - Copy `src/` + `models/` + `pipeline.py` + `requirements.txt` + `MODEL_NOTES.md`
 - Loại bỏ `src/training/`, `src/dataset_builders/`, `src/evaluation/`, metrics PNG, `__pycache__`
-- Nén ra `C:\Users\<user>\Desktop\elderly_care_deploy.zip` (~4.2MB)
+- Nén ra `D:\DATN\elderly_care-amine\elderly_care-amine\elderly_care_deploy.zip`
 
 Xác nhận zip chứa đủ artifact:
 
 ```powershell
-$arch = [System.IO.Compression.ZipFile]::OpenRead("$env:USERPROFILE\Desktop\elderly_care_deploy.zip")
+$arch = [System.IO.Compression.ZipFile]::OpenRead("D:\DATN\elderly_care-amine\elderly_care-amine\elderly_care_deploy.zip")
 $arch.Entries | Where-Object FullName -match '\.(pkl|json)$' | Sort-Object FullName | Select-Object FullName, Length
 $arch.Dispose()
 ```
@@ -120,7 +121,7 @@ Phải có 9 file `.pkl` + các file `.json` schema/config.
    - **OS**: Raspberry Pi OS (64-bit) → **Bookworm Lite** (KHÔNG cần GUI, tiết kiệm RAM)
    - **Storage**: SD card
 4. Bấm **Ctrl+Shift+X** (Advanced options) — bắt buộc cấu hình trước khi flash:
-   - ☑ Set hostname: `raspberrypi` (hoặc tên tuỳ chọn)
+   - ☑ Set hostname: `elderlycare` (khuyến nghị để app dùng `elderlycare.local`, không cần tìm IP thủ công)
    - ☑ Enable SSH (password authentication)
    - ☑ Set username/password: ví dụ `custard` / `<mật khẩu>`
    - ☑ Configure wireless LAN: SSID + password WiFi
@@ -137,12 +138,12 @@ Phải có 9 file `.pkl` + các file `.json` schema/config.
 Trên PC Windows (PowerShell hoặc Windows Terminal):
 
 ```powershell
-ssh custard@raspberrypi.local
+ssh custard@elderlycare.local
 ```
 
 Lần đầu sẽ hỏi "Are you sure you want to continue connecting?" → gõ `yes` → nhập password.
 
-**Nếu `raspberrypi.local` không resolve**: tìm IP Pi trên admin router rồi:
+**Nếu `elderlycare.local` không resolve**: kiểm tra `avahi-daemon`, cùng Wi-Fi/LAN, hoặc tìm IP Pi trên admin router rồi:
 
 ```powershell
 ssh custard@<IP_PI>
@@ -170,7 +171,7 @@ sudo apt install -y \
     bluetooth bluez libbluetooth-dev \
     libffi-dev libssl-dev \
     sqlite3 git unzip nano htop \
-    libgomp1
+    libgomp1 avahi-daemon
 ```
 
 Quá trình mất 5–15 phút tuỳ tốc độ mạng.
@@ -180,6 +181,7 @@ Bật Bluetooth và verify:
 ```bash
 sudo systemctl enable bluetooth
 sudo systemctl start bluetooth
+sudo systemctl enable --now avahi-daemon
 sleep 2
 hciconfig hci0
 ```
@@ -208,13 +210,13 @@ Vẫn fail → reboot Pi (`sudo reboot`) + check lại sau khi boot.
 **Trên PC Windows (mở PowerShell mới, KHÔNG phải SSH terminal):**
 
 ```powershell
-scp C:\Users\<user>\Desktop\elderly_care_deploy.zip custard@raspberrypi.local:/home/custard/
+scp D:\DATN\elderly_care-amine\elderly_care-amine\elderly_care_deploy.zip elcaprj@elderlycare.local:/home/elcaprj/
 ```
 
 Verify trên Pi:
 
 ```bash
-ls -lh /home/custard/elderly_care_deploy.zip
+ls -lh /home/elcaprj/elderly_care_deploy.zip
 ```
 
 Phải thấy size ~4.2M.
@@ -224,7 +226,7 @@ Phải thấy size ~4.2M.
 ## Bước 5: Giải nén + tạo virtualenv Python
 
 ```bash
-cd /home/custard
+cd /home/elcaprj
 unzip elderly_care_deploy.zip -d elderly_care
 cd elderly_care
 ls
@@ -243,8 +245,8 @@ pip install --upgrade pip setuptools wheel
 Tạo thư mục data/logs (absolute path):
 
 ```bash
-mkdir -p /home/custard/elderly_care/data
-mkdir -p /home/custard/elderly_care/logs
+mkdir -p /home/elcaprj/elderly_care/data
+mkdir -p /home/elcaprj/elderly_care/logs
 ```
 
 ---
@@ -254,7 +256,7 @@ mkdir -p /home/custard/elderly_care/logs
 ### 6.1 — Cài production dependencies
 
 ```bash
-source /home/custard/elderly_care/.venv/bin/activate
+source /home/elcaprj/elderly_care/.venv/bin/activate
 pip install -r requirements.txt
 ```
 
@@ -295,8 +297,10 @@ Dán toàn bộ template dưới (sửa giá trị MAC + MongoDB tuỳ tình hu�
 # Thay bằng MAC của Polar H10 cụ thể (lấy ở Bước 8)
 POLAR_H10_MAC=24:AC:AC:13:EB:86
 
-# ---- Storage (BẮT BUỘC absolute path) ----
-ECG_DATA_DIR=/home/custard/elderly_care/data
+# ---- Storage ----
+# Relative path is resolved from WorkingDirectory=/home/elcaprj/elderly_care.
+# This avoids accidentally writing to another Linux user's home folder.
+ECG_DATA_DIR=./data
 SAVE_LEGACY_RAW_CSV=0
 
 # ---- MongoDB Atlas (để URI rỗng nếu chưa có cloud) ----
@@ -324,6 +328,11 @@ API_PORT=8000
 
 # ---- Logging ----
 LOG_LEVEL=INFO
+
+# ---- Polar collector auto-start ----
+# Set to 1 on production Raspberry Pi after POLAR_H10_MAC is correct.
+POLAR_AUTO_START=1
+POLAR_AUTO_START_CHUNK_SECONDS=10
 ```
 
 Save: `Ctrl+O` → `Enter` → `Ctrl+X`
@@ -331,7 +340,7 @@ Save: `Ctrl+O` → `Enter` → `Ctrl+X`
 ⚠ Lưu ý quan trọng:
 
 - `POLAR_H10_MAC` PHẢI giống MAC pair ở Bước 8 (cùng Pi vẫn pair được cho nhiều Polar H10 khác nhau)
-- `ECG_DATA_DIR` PHẢI là absolute path, KHÔNG dùng relative
+- `ECG_DATA_DIR=./data` là cấu hình khuyến nghị khi systemd có `WorkingDirectory=/home/elcaprj/elderly_care`
 - KHÔNG commit `.env` lên git (đã có `.env` trong `.gitignore` của project gốc)
 
 ---
@@ -438,7 +447,7 @@ INFO:     Uvicorn running on http://0.0.0.0:8000
 Mở SSH terminal #2 (giữ terminal #1 chạy uvicorn):
 
 ```bash
-ssh custard@raspberrypi.local
+ssh custard@elderlycare.local
 curl -s http://localhost:8000/health | python3 -m json.tool
 ```
 
@@ -457,7 +466,7 @@ Kỳ vọng:
 }
 ```
 
-Trong dashboard browser từ PC: `http://raspberrypi.local:8000/dashboard` cũng phải lên.
+Trong dashboard browser từ PC: `http://elderlycare.local:8000/dashboard` cũng phải lên.
 
 Sau khi verify OK, quay lại terminal #1 nhấn **`Ctrl+C`** để dừng uvicorn. Sang Bước 10.
 
@@ -468,6 +477,7 @@ Sau khi verify OK, quay lại terminal #1 nhấn **`Ctrl+C`** để dừng uvico
 ### 10.1 — Tạo unit file
 
 ```bash
+sudo cp /home/elcaprj/elderly_care/deploy/systemd/elderly-care.service /etc/systemd/system/elderly-care.service
 sudo nano /etc/systemd/system/elderly-care.service
 ```
 
@@ -481,15 +491,15 @@ Wants=network-online.target bluetooth.target
 
 [Service]
 Type=simple
-User=custard
-Group=custard
-WorkingDirectory=/home/custard/elderly_care
-EnvironmentFile=/home/custard/elderly_care/.env
-ExecStart=/home/custard/elderly_care/.venv/bin/uvicorn src.api.pipeline:app --host 0.0.0.0 --port 8000
-Restart=on-failure
+User=elcaprj
+Group=elcaprj
+WorkingDirectory=/home/elcaprj/elderly_care
+EnvironmentFile=/home/elcaprj/elderly_care/.env
+ExecStart=/home/elcaprj/elderly_care/.venv/bin/uvicorn src.api.pipeline:app --host 0.0.0.0 --port 8000
+Restart=always
 RestartSec=10
-StandardOutput=append:/home/custard/elderly_care/logs/uvicorn.log
-StandardError=append:/home/custard/elderly_care/logs/uvicorn.err.log
+StandardOutput=append:/home/elcaprj/elderly_care/logs/uvicorn.log
+StandardError=append:/home/elcaprj/elderly_care/logs/uvicorn.err.log
 
 # BLE permissions (CAP_NET_RAW cần cho bleak)
 AmbientCapabilities=CAP_NET_RAW CAP_NET_ADMIN
@@ -624,7 +634,7 @@ sudo reboot
 Pi mất kết nối ~30 giây. SSH lại:
 
 ```bash
-ssh custard@raspberrypi.local
+ssh custard@elderlycare.local
 ```
 
 Verify service đã tự khởi động:
@@ -644,7 +654,7 @@ Sau khi tất cả ổn, chạy soak test để đảm bảo không có memory l
 
 ```bash
 # Từ PC hoặc Pi khác
-ssh custard@raspberrypi.local
+ssh custard@elderlycare.local
 
 # Đảm bảo Polar đang đeo
 curl -X POST http://localhost:8000/polar/start
@@ -652,7 +662,7 @@ curl -X POST http://localhost:8000/polar/start
 # Trên PC dev (KHÔNG phải Pi), chạy soak test client
 # (cần code src/services/soak_test.py — chỉ có ở dev environment, không trong deploy zip)
 python -m src.services.soak_test \
-    --base-url http://raspberrypi.local:8000 \
+    --base-url http://elderlycare.local:8000 \
     --duration-minutes 360 \
     --check-storage \
     --sync-every 10 \
@@ -884,7 +894,7 @@ Khi có bản code mới từ dev (zip mới):
 & "C:\Users\<user>\Desktop\ElderlyCareModel\pack_for_pi.ps1"
 
 # Copy sang Pi
-scp C:\Users\<user>\Desktop\elderly_care_deploy.zip custard@raspberrypi.local:/home/custard/
+scp C:\Users\<user>\Desktop\elderly_care_deploy.zip custard@elderlycare.local:/home/custard/
 ```
 
 ### Trên Pi
@@ -960,6 +970,45 @@ sudo systemctl start elderly-care
 
 ## Phụ lục: lệnh vận hành thường dùng
 
+### Setup production tu dong
+
+Sau khi giai nen `elderly_care_deploy.zip` tren Raspberry Pi, co the cai toan bo production bang mot lenh:
+
+```bash
+cd /home/elcaprj/elderly_care
+bash scripts/install_pi_production.sh
+```
+
+Script nay tu dong:
+
+- dat hostname thanh `elderlycare`
+- cai va bat `avahi-daemon`, app truy cap qua `http://elderlycare.local:8000`
+- cai system packages cho Python, Bluetooth/BlueZ, NetworkManager, mDNS, Mosquitto, SQLite
+- tao/cap nhat `.venv`
+- cai `requirements.txt`
+- tao/cap nhat `.env`
+- bat `POLAR_AUTO_START=1`
+- tao `data/` va `logs/`
+- cai, enable, restart `elderly-care.service`
+- cai, enable, restart `elderly-care-wifi-provisioner.service`
+- smoke test endpoint `/health`
+
+Neu muon set MAC Polar ngay khi cai:
+
+```bash
+cd /home/elcaprj/elderly_care
+POLAR_H10_MAC=24:AC:AC:13:EB:86 bash scripts/install_pi_production.sh
+```
+
+Neu muon cau hinh MongoDB sync ngay khi cai:
+
+```bash
+cd /home/elcaprj/elderly_care
+POLAR_H10_MAC=24:AC:AC:13:EB:86 MONGODB_SYNC_ENABLED=1 MONGODB_URI='mongodb+srv://...' bash scripts/install_pi_production.sh
+```
+
+Sau khi chay xong, app nguoi deo nhap `elderlycare.local` hoac `http://elderlycare.local:8000`.
+
 ### Service control
 
 ```bash
@@ -1025,8 +1074,8 @@ curl -X POST http://localhost:8000/storage/sync-scheduler/stop
 curl -X POST http://localhost:8000/storage/sync-scheduler/run-once
 
 # Dashboard (browser)
-# http://raspberrypi.local:8000/dashboard
-# http://raspberrypi.local:8000/docs   (Swagger)
+# http://elderlycare.local:8000/dashboard
+# http://elderlycare.local:8000/docs   (Swagger)
 ```
 
 ### Bluetooth control
