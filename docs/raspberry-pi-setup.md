@@ -297,10 +297,16 @@ pip install --upgrade pip wheel
 pip install -r requirements.txt
 ```
 
-**Lưu ý cho Pi 5:** nếu project có `numpy`, `scipy`, `scikit-learn`, `tensorflow`, nên cài bản pre-built ARM64:
+**Lưu ý cho Pi 5:** runtime production dùng venv và `requirements.txt`. Không cài `python3-sklearn` bằng apt cho project này, vì artifact rhythm/ectopy cần đúng `scikit-learn==1.8.0` từ pip trong venv.
 
 ```bash
-sudo apt install -y python3-numpy python3-scipy python3-sklearn libatlas-base-dev
+python -c "import sklearn; print(sklearn.__version__)"
+```
+
+Kết quả cần là `1.8.0`. Nếu sai, chạy:
+
+```bash
+pip install --force-reinstall --no-cache-dir scikit-learn==1.8.0
 ```
 
 Nếu có TFLite (suy luận inference cho stress/ectopy):

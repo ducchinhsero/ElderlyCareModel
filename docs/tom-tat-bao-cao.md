@@ -14,7 +14,8 @@ ECG/ACC input
 -> local preprocessing 130 Hz, window 30s
 -> signal quality
 -> ECG/HRV/rhythm features
--> local rhythm model + emotion model + anomaly model
+-> local rhythm model + stress model + PVC/PAC ectopy model
+-> global anomaly legacy model with signal-quality gate
 -> AF episode tracker + ACC activity/fall rules
 -> immediate local alert + risk engine
 -> local FastAPI dashboard + SQLite/CSV/JSONL
@@ -29,8 +30,8 @@ ECG/ACC input
 - Ước lượng nhịp tim từ RR interval.
 - Phân loại rhythm: `normal`, `possible_afib`, `other_rhythm`, `noise`.
 - Tính xác suất AFib, theo dõi AF episode và AF burden.
-- Dự đoán emotion: `neutral`, `stress`, `relaxed`.
-- Phát hiện anomaly ECG legacy hoặc anomaly cá nhân hóa.
+- Dự đoán stress nhị phân: `non_stress`, `stress`, `unknown`.
+- Anomaly ECG legacy chạy lại ở dạng global model; calibration cá nhân tắt mặc định để tránh nhiễu từ baseline chưa ổn định.
 - Phân loại hoạt động ACC: `REST`, `SLOW_WALK`, `WALK`, `ACTIVE`.
 - Phát hiện ngã rule-based: impact, free-fall, post-still.
 - Hiệu chỉnh personal baseline lũy tiến tối đa 7 ngày cho từng người dùng; so sánh HR, REST HR, AF suspicion, anomaly và PVC/PAC với mức nền cá nhân.

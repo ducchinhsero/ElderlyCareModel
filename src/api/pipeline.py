@@ -10,6 +10,7 @@ from datetime import datetime
 import joblib
 import numpy as np
 import pandas as pd
+import sklearn
 
 from src.assessment.daily_health_assessment import compute_daily_health_assessment
 from src.assessment.temporal_health_report import compute_temporal_health_report
@@ -189,7 +190,22 @@ def _env_int(name, default):
         return default
 
 
+def _env_float(name, default):
+    value = os.getenv(name)
+    if value is None or not value.strip():
+        return default
+    try:
+        return float(value)
+    except ValueError:
+        return default
+
+
 rhythm_decision_config = _load_json_config(RHYTHM_DECISION_CONFIG_PATH)
+REQUIRED_SKLEARN_VERSION = os.getenv("REQUIRED_SKLEARN_VERSION", "1.8.0")
+ANOMALY_ENABLED = _env_bool("ANOMALY_ENABLED", default=True)
+ANOMALY_CALIBRATION_ENABLED = _env_bool("ANOMALY_CALIBRATION_ENABLED", default=False)
+ANOMALY_MIN_SIGNAL_QUALITY_SCORE = _env_float("ANOMALY_MIN_SIGNAL_QUALITY_SCORE", 0.65)
+ANOMALY_DISTRIBUTION_GUARD_Z = _env_float("ANOMALY_DISTRIBUTION_GUARD_Z", 25.0)
 RHYTHM_AFIB_DECISION_MODE = os.getenv(
     "RHYTHM_AFIB_DECISION_MODE",
     str(rhythm_decision_config.get("decision_mode") or "probability_only"),
@@ -292,8 +308,8 @@ def _load_schema(path, fallback):
 
 
 stress_predictor = StressPredictor(STRESS_MODEL_DIR)
-anomaly_model = _load_joblib(ANOMALY_MODEL_PATH)
-anomaly_scaler = _load_joblib(ANOMALY_SCALER_PATH)
+anomaly_model = _load_joblib(ANOMALY_MODEL_PATH) if ANOMALY_ENABLED else None
+anomaly_scaler = _load_joblib(ANOMALY_SCALER_PATH) if ANOMALY_ENABLED else None
 rhythm_predictor = RhythmFeaturePredictor(
     model_path=RHYTHM_MODEL_PATH,
     scaler_path=RHYTHM_SCALER_PATH,
@@ -379,6 +395,47 @@ def _unknown_af_episode(reason="No reliable rhythm result available."):
         "afib_probability_threshold": RHYTHM_AFIB_EPISODE_THRESHOLD,
         "reason": reason,
     }
+
+
+def _disabled_anomaly(total_windows=0):
+    return {
+        "label": "disabled",
+        "value": None,
+        "anomaly_windows": 0,
+        "total_windows": int(total_windows),
+        "reason": "Anomaly model is disabled in production runtime.",
+        "model_source": "disabled_legacy",
+    }
+
+
+def _anomaly_is_disabled(anomaly):
+    return (anomaly or {}).get("label") == "disabled" or (anomaly or {}).get("model_source") == "disabled_legacy"
+
+
+def _anomaly_quality_block_reason(signal_quality):
+    signal_quality = signal_quality or {}
+    label = str(signal_quality.get("label") or "unknown").lower()
+    score = float(signal_quality.get("score") or 0.0)
+    reasons = [str(reason).lower() for reason in (signal_quality.get("reasons") or [])]
+    reason_text = " ".join(reasons)
+
+    if label not in {"good", "fair"}:
+        return "Signal quality is too poor for anomaly screening."
+    if score < ANOMALY_MIN_SIGNAL_QUALITY_SCORE:
+        return "Signal quality is below the anomaly screening threshold."
+    if label == "fair" and any(
+        term in reason_text
+        for term in (
+            "noise",
+            "loose contact",
+            "motion artifact",
+            "too narrow",
+            "too wide",
+            "unstable rr",
+        )
+    ):
+        return "Signal quality is fair but contains noise/contact indicators; anomaly screening skipped."
+    return None
 
 
 def _get_af_tracker(patient_id):
@@ -660,6 +717,10 @@ def _predict_stress_for_patient(ecg, sample_rate_hz, patient_id, timestamp):
 
 
 def _get_calibrated_anomaly(patient_id):
+    if not ANOMALY_ENABLED:
+        return None
+    if not ANOMALY_CALIBRATION_ENABLED:
+        return None
     if not patient_id:
         return None
     if patient_id not in calibrated_anomaly_cache:
@@ -681,7 +742,7 @@ def _predict_anomaly_with_model(
     if allow_distribution_guard:
         morphology_z = np.abs(X_scaled[:, 5:])
         max_morphology_z = float(np.max(morphology_z)) if morphology_z.size else 0.0
-        if max_morphology_z > 25.0:
+        if max_morphology_z > ANOMALY_DISTRIBUTION_GUARD_Z:
             return {
                 "label": "unknown",
                 "value": None,
@@ -689,7 +750,7 @@ def _predict_anomaly_with_model(
                 "total_windows": len(feature_rows),
                 "reason": (
                     "Anomaly model input is outside the training distribution. "
-                    "Retrain or calibrate anomaly model with Polar H10 normal data."
+                    "Retrain the global anomaly model with Polar H10 normal data."
                 ),
                 "max_morphology_z": max_morphology_z,
                 "model_source": source,
@@ -717,13 +778,29 @@ def _predict_anomaly_with_model(
     }
 
 
-def _summarize_anomaly(feature_rows, patient_id=None):
+def _summarize_anomaly(feature_rows, patient_id=None, signal_quality=None):
+    if not ANOMALY_ENABLED:
+        return _disabled_anomaly(total_windows=len(feature_rows or []))
+
     if not feature_rows:
         return {
             "label": "unknown",
             "value": None,
             "anomaly_windows": 0,
             "total_windows": 0,
+            "reason": "Not enough ECG windows for anomaly screening.",
+            "model_source": "global_legacy",
+        }
+
+    quality_block_reason = _anomaly_quality_block_reason(signal_quality)
+    if quality_block_reason:
+        return {
+            "label": "unknown",
+            "value": None,
+            "anomaly_windows": 0,
+            "total_windows": len(feature_rows),
+            "reason": quality_block_reason,
+            "model_source": "quality_gated_global_legacy",
         }
 
     calibrated = _get_calibrated_anomaly(patient_id)
@@ -743,6 +820,8 @@ def _summarize_anomaly(feature_rows, patient_id=None):
             "value": None,
             "anomaly_windows": 0,
             "total_windows": len(feature_rows),
+            "reason": "Global anomaly model artifacts are not loaded.",
+            "model_source": "global_legacy",
         }
 
     _validate_feature_schema(anomaly_feature_columns, ANOMALY_FEATURE_COLUMNS, "anomaly")
@@ -750,7 +829,7 @@ def _summarize_anomaly(feature_rows, patient_id=None):
         feature_rows,
         anomaly_model,
         anomaly_scaler,
-        source="generic_mitbih_ptbdb",
+        source="global_legacy",
         allow_distribution_guard=True,
     )
 
@@ -759,10 +838,17 @@ def _alert_and_message(stress, anomaly):
     stress_label = stress["label"]
     anomaly_label = anomaly["label"]
 
+    if _anomaly_is_disabled(anomaly):
+        if stress_label == "stress":
+            return "medium", "Stress detected. ECG anomaly model is disabled."
+        if stress_label == "non_stress":
+            return "normal", "No stress detected. ECG anomaly model is disabled."
+        return "unknown", "Not enough reliable ECG data for a confident result."
+
     if anomaly_label == "abnormal" and stress_label == "stress":
-        return "critical", "Stress and abnormal ECG signal detected."
+        return "medium", "Stress and ECG anomaly screening signal detected."
     if anomaly_label == "abnormal":
-        return "high", "Abnormal ECG signal detected."
+        return "medium", "ECG anomaly screening signal detected. Continue monitoring and verify signal quality."
     if stress_label == "stress":
         return "medium", "Stress detected. ECG anomaly not detected."
     if stress_label == "non_stress" and anomaly_label == "normal":
@@ -842,12 +928,13 @@ def _apply_sensor_context_alert(alert_level, message, sensor_context):
 def _unknown_outputs_for_quality(signal_quality):
     reason = "; ".join(signal_quality.get("reasons") or ["Poor signal quality"])
     stress = unknown_stress(reason, model_version=stress_predictor.model_version, window_seconds=stress_predictor.window_seconds)
-    anomaly = {
+    anomaly = _disabled_anomaly(total_windows=0) if not ANOMALY_ENABLED else {
         "label": "unknown",
         "value": None,
         "anomaly_windows": 0,
         "total_windows": 0,
         "reason": reason,
+        "model_source": "quality_gated_global_legacy",
     }
     risk = {"level": "unknown", "score": 0.0, "reason": "Signal quality is too poor for risk scoring."}
     return stress, anomaly, risk
@@ -907,6 +994,21 @@ def _poor_signal_result(patient_id, sample_rate_hz, reason, acc_samples=None, ac
 
 
 def _risk_with_current(patient_id, anomaly, stress, signal_quality):
+    if _anomaly_is_disabled(anomaly):
+        if signal_quality.get("label") not in ("good", "fair"):
+            return {"level": "unknown", "score": 0.0, "reason": "Signal quality is too poor for risk scoring."}
+        if (stress or {}).get("label") == "stress":
+            return {
+                "level": "medium",
+                "score": 0.25,
+                "reason": "Anomaly model is disabled; current risk uses rhythm, HR, signal quality, and stress only.",
+            }
+        return {
+            "level": "low",
+            "score": 0.0,
+            "reason": "Anomaly model is disabled; current risk uses rhythm, HR, signal quality, and stress only.",
+        }
+
     if anomaly.get("value") is None:
         return {
             "level": "unknown",
@@ -1045,7 +1147,11 @@ def predict_ecg(
 
     window_count = len(anomaly_rows)
     stress = _predict_stress_for_patient(ecg, float(sample_rate_hz), patient_id, result_timestamp)
-    anomaly = _summarize_anomaly(anomaly_rows, patient_id=patient_id)
+    anomaly = _summarize_anomaly(
+        anomaly_rows,
+        patient_id=patient_id,
+        signal_quality=signal_quality,
+    )
     risk = _risk_with_current(patient_id, anomaly, stress, signal_quality)
     alert_level, message = _alert_and_message(stress, anomaly)
     if risk["level"] == "high" and alert_level not in ("critical", "high"):
@@ -2267,12 +2373,30 @@ if FastAPI is not None:
             }
         return {
             "status": "ok",
+            "sklearn_version": sklearn.__version__,
+            "required_sklearn_version": REQUIRED_SKLEARN_VERSION,
+            "sklearn_version_ok": sklearn.__version__ == REQUIRED_SKLEARN_VERSION,
+            "sklearn_version_warning": None
+            if sklearn.__version__ == REQUIRED_SKLEARN_VERSION
+            else (
+                f"scikit-learn {REQUIRED_SKLEARN_VERSION} is required for current model artifacts; "
+                f"running {sklearn.__version__}."
+            ),
             "stress_model_loaded": stress_predictor.loaded,
             "stress_model_error": stress_predictor.load_error,
             "stress_model_dir": STRESS_MODEL_DIR,
             "stress_model_window_seconds": stress_predictor.window_seconds,
-            "anomaly_model_loaded": anomaly_model is not None,
-            "anomaly_scaler_loaded": anomaly_scaler is not None,
+            "anomaly_enabled": ANOMALY_ENABLED,
+            "anomaly_calibration_enabled": ANOMALY_CALIBRATION_ENABLED,
+            "anomaly_runtime_status": (
+                "disabled_legacy"
+                if not ANOMALY_ENABLED
+                else ("enabled_calibrated_legacy" if ANOMALY_CALIBRATION_ENABLED else "enabled_global_legacy")
+            ),
+            "anomaly_model_loaded": bool(ANOMALY_ENABLED and anomaly_model is not None),
+            "anomaly_scaler_loaded": bool(ANOMALY_ENABLED and anomaly_scaler is not None),
+            "anomaly_min_signal_quality_score": ANOMALY_MIN_SIGNAL_QUALITY_SCORE,
+            "anomaly_distribution_guard_z": ANOMALY_DISTRIBUTION_GUARD_Z,
             "rhythm_model_loaded": rhythm_predictor.loaded,
             "rhythm_model_error": rhythm_predictor.load_error,
             "rhythm_model_source": "rhythm_feature_model",

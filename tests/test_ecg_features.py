@@ -120,6 +120,18 @@ class ECGFeatureTests(unittest.TestCase):
         self.assertNotIn("emotion", result)
         self.assertEqual(result["sensor_context"]["activity_state"], "REST")
 
+    def test_global_anomaly_runs_without_calibration_in_production_runtime(self):
+        result = predict_ecg(
+            synthetic_ecg(seconds=30),
+            sample_rate_hz=130,
+            patient_id="test",
+        )
+
+        self.assertTrue(pipeline.ANOMALY_ENABLED)
+        self.assertFalse(pipeline.ANOMALY_CALIBRATION_ENABLED)
+        self.assertIn(result["anomaly"]["label"], {"normal", "abnormal", "unknown"})
+        self.assertNotEqual(result["anomaly"].get("model_source"), "disabled_legacy")
+
     def test_realtime_pipeline_does_not_load_cnn_runtime(self):
         self.assertFalse(hasattr(pipeline, "rhythm_cnn_predictor"))
         self.assertFalse(hasattr(pipeline, "RHYTHM_PREDICTOR_MODE"))

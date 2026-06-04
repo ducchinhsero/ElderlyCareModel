@@ -276,7 +276,19 @@ Chỉ dùng bước này nếu muốn chạy lại CNN rhythm research. Không c
 python -c "import sklearn, neurokit2, bleak, fastapi, pymongo; print('OK', sklearn.__version__)"
 ```
 
-Phải in `OK 1.x.x` không lỗi.
+Phải in `OK 1.8.0` không lỗi. Artifact rhythm/ectopy hiện tại được train bằng `scikit-learn==1.8.0`; nếu Pi đang cài `1.9.0`, pickle model có thể lỗi `_loss` và rhythm/ectopy sẽ thành `unknown`.
+
+File `requirements.txt` đã pin `scikit-learn==1.8.0`, nên chạy lại:
+
+```bash
+pip install -r requirements.txt
+```
+
+Lệnh sửa nhanh nếu version vẫn sai:
+
+```bash
+pip install --force-reinstall --no-cache-dir scikit-learn==1.8.0
+```
 
 ---
 
@@ -456,7 +468,13 @@ Kỳ vọng:
 ```json
 {
   "status": "ok",
+  "sklearn_version": "1.8.0",
+  "required_sklearn_version": "1.8.0",
+  "sklearn_version_ok": true,
   "stress_model_loaded": true,
+  "anomaly_enabled": true,
+  "anomaly_calibration_enabled": false,
+  "anomaly_runtime_status": "enabled_global_legacy",
   "anomaly_model_loaded": true,
   "rhythm_model_loaded": true,
   "ectopy_model_loaded": true,
@@ -553,7 +571,7 @@ echo "=== Service status ==="
 sudo systemctl is-active elderly-care
 
 echo "=== Health ==="
-curl -s http://localhost:8000/health | python3 -c "import sys,json; d=json.load(sys.stdin); print(f'status={d[\"status\"]}, models_ok={all([d[\"rhythm_model_loaded\"], d[\"stress_model_loaded\"], d[\"ectopy_model_loaded\"], d[\"anomaly_model_loaded\"]])}, polar_addr={d[\"polar\"][\"address\"]}')"
+curl -s http://localhost:8000/health | python3 -c "import sys,json; d=json.load(sys.stdin); print(f'status={d[\"status\"]}, sklearn={d[\"sklearn_version\"]}, sklearn_ok={d[\"sklearn_version_ok\"]}, models_ok={all([d[\"rhythm_model_loaded\"], d[\"stress_model_loaded\"], d[\"ectopy_model_loaded\"], d[\"anomaly_model_loaded\"]])}, anomaly={d[\"anomaly_runtime_status\"]}, calibration={d[\"anomaly_calibration_enabled\"]}, polar_addr={d[\"polar\"][\"address\"]}')"
 
 echo "=== Storage ==="
 curl -s http://localhost:8000/storage/status | python3 -m json.tool | head -15

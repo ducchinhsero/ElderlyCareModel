@@ -6,7 +6,8 @@ Pham vi hien tai:
 
 - Thu ECG/ACC tu Polar H10.
 - Xu ly realtime qua FastAPI backend.
-- Chay cac model/rule: stress, rhythm, PVC/PAC, anomaly legacy, signal quality, activity/fall, daily/long-term assessment.
+- Chay cac model/rule: stress, rhythm, PVC/PAC, global anomaly legacy, signal quality, activity/fall, daily/long-term assessment.
+- Anomaly calibration ca nhan hien tat mac dinh; realtime dung global anomaly legacy co signal-quality gate.
 - Hieu chinh personal baseline luy tien toi da 7 ngay cho tung patient.
 - Luu du lieu vao SQLite va CSV raw ECG/ACC.
 - App Flutter hien thi output cho nguoi deo va nguoi giam sat.
@@ -25,7 +26,7 @@ flowchart TD
     E --> E1["Stress model"]
     E --> E2["Rhythm feature model"]
     E --> E3["PVC/PAC ectopy model"]
-    E --> E4["Anomaly legacy model"]
+    E --> E4["Global anomaly legacy model"]
     E --> E5["Activity/Fall/HR context rules"]
     E --> F["record_result"]
     F --> G["SQLite predictions/events"]
@@ -168,7 +169,11 @@ Can thay cac truong quan trong:
 - `rhythm_model_loaded = true`
 - `rhythm_model_source = rhythm_feature_model`
 - `ectopy_model_loaded = true`
-- `anomaly_model_loaded = true`
+- `sklearn_version = 1.8.0`
+- `sklearn_version_ok = true`
+- `anomaly_enabled = true`
+- `anomaly_calibration_enabled = false`
+- `anomaly_runtime_status = enabled_global_legacy`
 
 ### 6.2. Bat Polar collector
 

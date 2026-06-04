@@ -109,13 +109,17 @@ setup_env_file() {
   set_env_default "ECG_DATA_DIR" "./data"
   set_env_default "API_HOST" "0.0.0.0"
   set_env_default "API_PORT" "8000"
-  set_env_default "POLAR_AUTO_START" "1"
-  set_env_default "POLAR_AUTO_START_CHUNK_SECONDS" "10"
-  set_env_default "POLAR_ENABLE_HR_STREAM" "${POLAR_ENABLE_HR_STREAM:-1}"
-  set_env_default "POLAR_ENABLE_ACC_STREAM" "${POLAR_ENABLE_ACC_STREAM:-1}"
-  set_env_default "POLAR_CONNECT_TIMEOUT_SECONDS" "${POLAR_CONNECT_TIMEOUT_SECONDS:-20}"
-  set_env_default "POLAR_RECONNECT_SECONDS" "${POLAR_RECONNECT_SECONDS:-10}"
+  # Production Pi should collect automatically after boot even when .env.example
+  # ships with POLAR_AUTO_START=0 for local development.
+  set_env "POLAR_AUTO_START" "${POLAR_AUTO_START:-1}"
+  set_env "POLAR_AUTO_START_CHUNK_SECONDS" "${POLAR_AUTO_START_CHUNK_SECONDS:-10}"
+  set_env "POLAR_ENABLE_HR_STREAM" "${POLAR_ENABLE_HR_STREAM:-1}"
+  set_env "POLAR_ENABLE_ACC_STREAM" "${POLAR_ENABLE_ACC_STREAM:-1}"
+  set_env "POLAR_CONNECT_TIMEOUT_SECONDS" "${POLAR_CONNECT_TIMEOUT_SECONDS:-20}"
+  set_env "POLAR_RECONNECT_SECONDS" "${POLAR_RECONNECT_SECONDS:-10}"
   set_env_default "LATEST_RESULT_FRESH_SECONDS" "90"
+  set_env_default "ANOMALY_ENABLED" "1"
+  set_env_default "ANOMALY_CALIBRATION_ENABLED" "0"
   set_env_default "WIFI_PROVISIONING_STATUS_PATH" "/run/elderly-care/network_status.json"
   set_env_default "WIFI_PROVISIONING_STATE_DIR" "/var/lib/elderly-care/wifi_provisioning"
   set_env_default "WIFI_SETUP_TRIGGER_PATH" "/var/lib/elderly-care/wifi_setup_mode"
@@ -126,10 +130,18 @@ setup_env_file() {
     set_env "POLAR_H10_MAC" "$POLAR_H10_MAC"
   fi
 
+  if grep -q '^ANOMALY_ENABLED=0$' "$ENV_FILE"; then
+    set_env "ANOMALY_ENABLED" "1"
+  fi
+
   for optional_key in \
     MONGODB_URI MONGODB_SYNC_ENABLED MONGODB_DB \
     API_KEY API_AUTH_ENABLED \
-    MQTT_HOST MQTT_PORT MQTT_USERNAME MQTT_PASSWORD; do
+    MQTT_HOST MQTT_PORT MQTT_USERNAME MQTT_PASSWORD \
+    POLAR_AUTO_START POLAR_AUTO_START_CHUNK_SECONDS \
+    POLAR_ENABLE_HR_STREAM POLAR_ENABLE_ACC_STREAM \
+    POLAR_CONNECT_TIMEOUT_SECONDS POLAR_RECONNECT_SECONDS \
+    ANOMALY_ENABLED ANOMALY_CALIBRATION_ENABLED; do
     if [[ -n "${!optional_key:-}" ]]; then
       set_env "$optional_key" "${!optional_key}"
     fi
@@ -196,7 +208,11 @@ smoke_test() {
 
 print_summary() {
   local ap_password
+  local polar_auto_start
+  local polar_chunk_seconds
   ap_password="$(grep '^WIFI_AP_PASSWORD=' "$ENV_FILE" | cut -d= -f2-)"
+  polar_auto_start="$(grep '^POLAR_AUTO_START=' "$ENV_FILE" | cut -d= -f2-)"
+  polar_chunk_seconds="$(grep '^POLAR_AUTO_START_CHUNK_SECONDS=' "$ENV_FILE" | cut -d= -f2-)"
   cat <<EOF
 
 Production setup complete.
@@ -206,6 +222,10 @@ Local backend:
 
 LAN/app backend:
   http://${HOSTNAME_TARGET}.local:8000
+
+Polar collection:
+  Auto start: ${polar_auto_start}
+  Chunk:      ${polar_chunk_seconds}s
 
 Setup Wi-Fi AP:
   SSID prefix: ElderlyCare-Setup-XXXX

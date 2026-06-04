@@ -3,10 +3,23 @@ from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
+from src.api import pipeline
 from src.api.pipeline import app
 
 
 class DailyHealthApiTest(unittest.TestCase):
+    def test_health_reports_runtime_model_status(self):
+        response = TestClient(app).get("/health")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertIn("sklearn_version", payload)
+        self.assertEqual(payload["required_sklearn_version"], "1.8.0")
+        self.assertEqual(payload["sklearn_version_ok"], pipeline.sklearn.__version__ == "1.8.0")
+        self.assertTrue(payload["anomaly_enabled"])
+        self.assertFalse(payload["anomaly_calibration_enabled"])
+        self.assertEqual(payload["anomaly_runtime_status"], "enabled_global_legacy")
+
     def test_daily_health_assessment_endpoint_shape(self):
         expected = {
             "patient_id": "test_patient",

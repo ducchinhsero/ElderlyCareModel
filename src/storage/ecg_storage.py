@@ -936,8 +936,21 @@ def build_events_for_prediction(item):
             )
         )
 
-    stress = item.get("stress") or {}
+    anomaly = item.get("anomaly") or {}
     signal_quality = item.get("signal_quality") or {}
+    if anomaly.get("label") == "abnormal" and signal_quality.get("label") in {"good", "fair"}:
+        events.append(
+            _make_event(
+                item,
+                "ecg_anomaly",
+                "medium",
+                "abnormal",
+                "ECG anomaly screening signal detected. Verify signal quality and monitor for repeated events.",
+                {"anomaly": anomaly, "signal_quality": signal_quality},
+            )
+        )
+
+    stress = item.get("stress") or {}
     activity_state = ((item.get("sensor_context") or {}).get("activity_state") or "unknown").upper()
     if (
         stress.get("label") == "stress"
