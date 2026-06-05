@@ -21,6 +21,12 @@ python -m src.services.collect_clinical_arrhythmia_data \
   --address 24:AC:AC:13:EB:86
 ```
 
+PowerShell mot dong:
+
+```powershell
+python -m src.services.collect_clinical_arrhythmia_data --participant-id p001 --condition-group confirmed_afib --clinical-source doctor_confirmed --duration-minutes 60 --address 24:AC:AC:13:EB:86
+```
+
 Thu 2 gio:
 
 ```bash
