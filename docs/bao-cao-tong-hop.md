@@ -1,7 +1,14 @@
 # Báo cáo tổng hợp hệ thống Elderly Care ECG
 
-Ngày tổng hợp: 2026-05-21  
+Ngày tổng hợp: 2026-06-05
 Phạm vi: mã nguồn Python trong dự án `elderly_care-amine`, dữ liệu xử lý, model đã huấn luyện và các tài liệu hiện có trong `docs/`, `models/`, `src/`.
+
+### Cập nhật runtime 2026-06-05
+
+- Public API hiện dùng `stress`, không dùng `emotion` làm output chính.
+- Rhythm feature model là model production cho realtime; CNN rhythm chỉ giữ trong research/comparison.
+- Global anomaly legacy đang bật mặc định với signal-quality gate; patient-specific anomaly calibration tắt mặc định và chỉ bật khi `ANOMALY_CALIBRATION_ENABLED=1`.
+- Raspberry runtime cần `scikit-learn==1.8.0` để load đúng rhythm/ectopy/anomaly pickle artifacts.
 
 ## 1. Tóm tắt dự án
 
@@ -50,7 +57,7 @@ flowchart TD
     C --> D["Local preprocessing: resample, normalize, window 30s"]
     D --> E["Signal quality"]
     E --> F["Feature extraction ECG/HRV/Rhythm"]
-    F --> G["Local AI inference: rhythm, emotion, anomaly"]
+    F --> G["Local AI inference: rhythm, stress, ectopy, global anomaly"]
     C --> H["ACC context: activity, fall, HR context"]
     G --> I["AF episode tracker and AF burden"]
     G --> J["Risk and alert logic"]
@@ -69,7 +76,7 @@ flowchart TD
 2. Dữ liệu được xử lý ngay trên thiết bị biên/gateway cục bộ: kiểm tra đầu vào, đánh giá chất lượng tín hiệu, lọc, phát hiện R-peak, tính RR interval và trích xuất đặc trưng.
 3. Model rhythm chạy tại chỗ để dự đoán nhãn nhịp và xác suất `possible_afib`.
 4. Tracker AF episode tại biên theo dõi các cửa sổ liên tiếp để xác định cơn AF và AF burden.
-5. Model emotion và anomaly legacy tiếp tục chạy tại chỗ để giữ tương thích với pipeline cũ.
+5. Stress model, PVC/PAC ectopy model và global anomaly legacy chạy tại chỗ; anomaly calibration cá nhân chỉ bật khi được cấu hình riêng.
 6. Nếu có ACC, hệ thống phân loại hoạt động, phát hiện ngã và sinh cảnh báo HR theo hoạt động.
 7. Alert engine kết hợp rhythm, HR event, anomaly, stress, risk trend, fall và signal quality thành `alert_level`.
 8. Khi phát hiện bất thường, thiết bị/gateway có thể phát cảnh báo ngay tại thời điểm đó, ví dụ âm thanh, rung, đèn cảnh báo, notification nội bộ hoặc tín hiệu gửi sang app cục bộ.
@@ -81,7 +88,7 @@ flowchart TD
 - Tầng thu thập dữ liệu tại biên: BLE Polar H10, API HTTP, ECG/ACC stream.
 - Tầng xử lý tại chỗ: chuẩn hóa tần số mẫu, chuẩn hóa biên độ, chia cửa sổ 30 giây.
 - Tầng trích xuất đặc trưng tại biên: HRV, hình thái ECG, phổ, đặc trưng nhịp, đặc trưng gia tốc.
-- Tầng Edge AI inference: rhythm model mới, emotion model, anomaly legacy hoặc anomaly cá nhân hóa chạy cục bộ.
+- Tầng Edge AI inference: rhythm feature model, stress model, PVC/PAC ectopy model và global anomaly legacy chạy cục bộ.
 - Tầng rule engine/cảnh báo tức thời: chất lượng tín hiệu, HR event, fall, risk, alert.
 - Tầng lưu trữ cục bộ: SQLite, CSV, JSONL để hệ thống vẫn hoạt động khi không có Internet.
 - Tầng đồng bộ cloud/mobile: MongoDB hoặc cloud backend nhận dữ liệu đã xử lý để gửi đến ứng dụng điện thoại.
@@ -123,7 +130,7 @@ Phụ trách xử lý ECG truyền thống:
 - Lọc bandpass Butterworth bậc 2 từ 5-40 Hz.
 - Phát hiện R-peak bằng `scipy.signal.find_peaks`.
 - Tính RR interval theo ms.
-- Trích xuất HRV cho emotion/anomaly: `RR_mean`, `mean_HR`, `SDNN`, `RMSSD`, `pNN50`, `LF/HF`, `CVRR`.
+- Trích xuất HRV/RR cho stress và anomaly screening: `RR_mean`, `mean_HR`, `SDNN`, `RMSSD`, `pNN50`, `LF/HF`, `CVRR`.
 - Đánh giá chất lượng tín hiệu: thời lượng, NaN, zero ratio, biên độ, số R-peak, tỷ lệ RR hợp lệ, outlier RR.
 - Trích xuất đặc trưng hình thái nhịp tim: biên độ beat, năng lượng beat, slope QRS.
 - Tạo matrix feature đúng schema cho model.
@@ -164,9 +171,9 @@ Phụ trách dữ liệu gia tốc ACC từ Polar H10:
 File trung tâm của hệ thống realtime:
 
 - Khởi tạo FastAPI và dashboard.
-- Load model emotion, anomaly, rhythm và decision config.
+- Load model stress, rhythm, ectopy, global anomaly legacy và decision config.
 - Cấu hình BLE Polar H10: HR UUID, PMD_CONTROL, PMD_DATA, ECG/ACC start/stop command.
-- `predict_ecg`: hàm inference chính, kết hợp signal quality, emotion, anomaly, rhythm, AF episode, HR event, ACC context, risk và alert.
+- `predict_ecg`: hàm inference chính, kết hợp signal quality, stress, anomaly, rhythm, ectopy, AF episode, HR event, ACC context, risk và alert.
 - API endpoints:
   - `GET /health`
   - `GET /dashboard`
@@ -186,7 +193,7 @@ File trung tâm của hệ thống realtime:
   - `POST /personal-baseline/update-progressive`
   - `POST /personal-baseline/calibrate`
   - `GET /personal-baseline/status`
-- Dashboard HTML hiển thị HR, emotion, anomaly, rhythm, AFib probability, AF episode, signal quality, risk, activity, fall, waveform, history và event timeline.
+- Dashboard HTML hiển thị HR, stress, anomaly, rhythm, AFib probability, AF episode, signal quality, risk, activity, fall, waveform, history và event timeline.
 
 ### 4.8 `src/training/`
 
@@ -194,7 +201,7 @@ File trung tâm của hệ thống realtime:
 |---|---|
 | `train_rhythm_features.py` | Train rhythm feature baseline từ `data_processed/rhythm*`; thử RandomForest, ExtraTrees, HistGradientBoosting; chọn model theo score ưu tiên macro F1, AFib recall, noise recall và giảm false AFib từ noise. |
 | `evaluate_long_term_afdb.py` | Đánh giá model rhythm trên AFDB dài hạn: window-level AF detection, threshold sweep, episode metrics, AF burden, tạo `rhythm_decision_config.json`. |
-| `train_emotion_wesad.py` | Train RandomForest emotion/stress từ WESAD ECG chest 700 Hz, dùng GroupKFold theo subject. |
+| `train_stress_wesad.py` | Train stress model nhị phân từ WESAD ECG chest, dùng LOSO/GroupKFold theo subject. |
 | `train_anomaly_legacy.py` | Train IsolationForest anomaly legacy từ MITBIH/PTBDB, chỉ dùng dữ liệu normal để học biên bình thường. |
 
 ### 4.9 `src/dataset_builders/`
@@ -245,8 +252,12 @@ File trung tâm của hệ thống realtime:
 | `models/rhythm/rhythm_decision_config.json` | Threshold deployment cho AF episode và alert. |
 | `models/metrics/rhythm_feature_metrics.json` | Metric multiclass rhythm trên test split. |
 | `models/metrics/afdb_long_term_metrics.json` | Metric AFDB dài hạn, threshold sweep, AF burden, episode metrics. |
-| `models/emotion/emotion_model.pkl` | RandomForest emotion/stress. |
-| `models/emotion/emotion_metrics.json` | Metric emotion model. |
+| `models/stress/rf_model.pkl` | RandomForest branch của stress model WESAD. |
+| `models/stress/svm_pipeline.pkl` | SVM pipeline branch của stress model WESAD. |
+| `models/stress/scaler_final.pkl` | Scaler dùng cho stress features. |
+| `models/stress/model_metadata.json` | Metadata stress model, label map, window seconds và metrics tóm tắt. |
+| `models/stress/stress_feature_schema.json` | Schema feature của stress model. |
+| `models/metrics/stress_metrics.json` | Metric stress model. |
 | `models/anomaly_legacy/isolation_forest_model.pkl` | IsolationForest anomaly legacy. |
 | `models/anomaly_legacy/anomaly_scaler.pkl` | Scaler anomaly legacy. |
 | `models/anomaly_legacy/anomaly_feature_schema.json` | Schema 10 anomaly features. |
@@ -269,10 +280,10 @@ python -m pip install -r requirements.txt
 
 ### 5.2 Train hoặc rebuild model
 
-Train emotion:
+Train stress:
 
 ```powershell
-python -m src.training.train_emotion_wesad
+python -m src.training.train_stress_wesad --wesad-root data_raw/wesad --skip-importance
 ```
 
 Train anomaly legacy:
@@ -375,7 +386,7 @@ Body mẫu:
 Kết quả trả về gồm:
 
 - `heart_rate_bpm`
-- `emotion`
+- `stress`
 - `anomaly`
 - `rhythm`
 - `hr_event`
@@ -474,7 +485,7 @@ Trong kiến trúc Edge AI, cloud không bắt buộc để tạo cảnh báo t�
 
 Các loại dữ liệu nên đồng bộ:
 
-- Prediction metadata: nhịp, xác suất AFib, HR, emotion, anomaly, signal quality, alert level.
+- Prediction metadata: nhịp, xác suất AFib, HR, stress, anomaly, signal quality, alert level.
 - Events: rhythm alert, HR event, fall candidate, signal quality issue.
 - Session summaries: thống kê theo phiên đo.
 - Risk summaries: điểm rủi ro theo ngày/tuần.
@@ -535,7 +546,7 @@ Body:
 
 | Ký hiệu | Giải thích |
 |---|---|
-| WESAD | Dataset stress/affect detection từ thiết bị đeo, dùng train emotion/stress. |
+| WESAD | Dataset stress/affect detection từ thiết bị đeo, dùng train stress binary. |
 | CinC 2017 | PhysioNet/Computing in Cardiology Challenge 2017, phân loại ECG single-lead thành Normal, AF, Other, Noise. |
 | AFDB | MIT-BIH Atrial Fibrillation Database, dùng đánh giá AF dài hạn. |
 | NSTDB | MIT-BIH Noise Stress Test Database, dùng augment nhiễu. |
@@ -650,14 +661,15 @@ AF burden:
 AF burden (%) = 100 * total_af_duration_sec / total_monitoring_duration_sec
 ```
 
-### 6.6 Thuật toán emotion/stress
+### 6.6 Thuật toán stress
 
-Emotion model dùng WESAD:
+Stress model dùng WESAD:
 
-- Input: đặc trưng HRV từ ECG.
-- Nhãn: `neutral`, `stress`, `relaxed`.
-- Model: `RandomForestClassifier`.
-- Validation chính: GroupKFold theo subject để tránh một người vừa nằm trong train vừa trong test.
+- Input: đặc trưng HRV/RR rolling từ ECG.
+- Nhãn public: `non_stress`, `stress`, `unknown`.
+- Model: soft voting/ensemble từ RandomForest và SVM pipeline.
+- Validation chính: LOSO/GroupKFold theo subject để tránh một người vừa nằm trong train vừa trong test.
+- Realtime cần rolling RR buffer khoảng 300 giây; trước khi đủ dữ liệu hệ thống trả `stress.label = unknown`.
 
 Đặc trưng:
 
@@ -673,11 +685,12 @@ Anomaly legacy dùng `IsolationForest`:
 - Có `StandardScaler`.
 - Có distribution guard: nếu morphology feature lệch quá xa phân phối train, hệ thống trả `unknown` và khuyến nghị retrain/calibrate.
 
-Phiên bản tốt hơn là anomaly cá nhân hóa:
+Phiên bản anomaly cá nhân hóa hiện tắt mặc định:
 
 - Người dùng đánh dấu session bình thường.
 - Hệ thống train `IsolationForest` riêng cho từng patient.
 - Threshold được đặt theo envelope baseline để session baseline không tự cảnh báo.
+- Chỉ bật lại khi có baseline chất lượng tốt và đã validation, bằng `ANOMALY_CALIBRATION_ENABLED=1`.
 
 ### 6.7.1 Progressive personal baseline 7 ngày
 
@@ -686,7 +699,7 @@ Ngoài anomaly calibration, hệ thống có thêm baseline cá nhân không hu�
 - Nguồn dữ liệu: SQLite `predictions` của từng `patient_id`.
 - Cửa sổ hiệu chỉnh: rolling tối đa 7 ngày.
 - Bộ lọc dữ liệu: chỉ dùng signal quality `good|fair`; mặc định loại các window có alert `high|critical`.
-- Chỉ số lưu lại: HR tổng thể, HR theo activity, AF suspicion ratio, anomaly ratio, PVC/PAC ratio, phân bố signal quality và emotion.
+- Chỉ số lưu lại: HR tổng thể, HR theo activity, AF suspicion ratio, anomaly ratio, PVC/PAC ratio, phân bố signal quality và stress.
 - Trạng thái:
   - `not_ready`: chưa đủ prediction tin cậy.
   - `warming_up`: đủ prediction nhưng chưa đủ 7 ngày.
@@ -817,34 +830,35 @@ Nhận xét:
 - Threshold 0,1 ít báo sai hơn, nhưng bỏ sót AF nhiều hơn.
 - Với người cao tuổi, tùy mục tiêu có thể chọn ưu tiên recall để không bỏ sót, hoặc precision để giảm cảnh báo sai. Prototype hiện chọn hướng cân bằng theo F1 và có ràng buộc false episode/hour.
 
-### 7.3 Emotion/stress model
+### 7.3 Stress model
 
-Từ `models/emotion/emotion_metrics.json`:
+Từ `models/metrics/stress_metrics.json`:
 
 | Chỉ số | Giá trị |
 |---|---:|
-| GroupKFold mean accuracy | 61,61% |
-| GroupKFold std | 5,53% |
-| Best fold accuracy | 67,34% |
-| Full dataset accuracy | 93,68% |
+| LOSO mean accuracy | 81,27% |
+| LOSO macro F1 mean | 77,42% |
+| LOSO stress F1 mean | 65,86% |
+| Full dataset accuracy | 82,04% |
 
 Diễn giải:
 
-- GroupKFold theo subject là chỉ số đáng tin hơn cho khả năng tổng quát. Mức 61,61% cho thấy model stress hiện tại còn yếu khi gặp người mới.
-- Full dataset accuracy 93,68% có thể quá lạc quan vì đánh giá trên toàn bộ dữ liệu sau khi chọn best fold model, không nên dùng để tuyên bố năng lực triển khai thực tế.
+- LOSO/GroupKFold theo subject là chỉ số đáng tin hơn cho khả năng tổng quát. Mức stress F1 khoảng 65,86% cho thấy model stress dùng được như tín hiệu sinh lý phụ nhưng chưa đủ để kết luận chắc chắn.
+- Full dataset accuracy 82,04% chỉ là tham khảo nội bộ, không nên dùng để tuyên bố năng lực chẩn đoán thực tế.
 - Vì chỉ dùng ECG HRV, không dùng đủ modal WESAD như EDA, respiration, temperature, nên khả năng phân biệt stress bị giới hạn.
 
 ### 7.4 Anomaly model
 
-Anomaly legacy hiện có artifact nhưng không có metrics JSON đầy đủ trong `models/metrics`. Vì vậy không nên công bố accuracy cụ thể cho anomaly legacy. Hệ thống có cơ chế:
+Anomaly legacy hiện có artifact global trong `models/anomaly_legacy/`, đang bật mặc định như lớp screening phụ. Tuy nhiên vẫn chưa có metrics JSON đầy đủ trong `models/metrics`, vì vậy không nên công bố accuracy cụ thể cho anomaly legacy. Hệ thống có cơ chế:
 
+- Trả `unknown` nếu signal quality kém, nhiễu hoặc nghi ngờ đeo lỏng.
 - Trả `unknown` nếu input nằm ngoài phân phối train.
-- Cho phép calibration theo từng patient bằng dữ liệu baseline nghỉ.
+- Chỉ cho phép calibration theo từng patient khi bật `ANOMALY_CALIBRATION_ENABLED=1`.
 
 Nhận xét:
 
-- Model anomaly legacy chỉ nên xem là lớp hỗ trợ tương thích.
-- Hướng đúng hơn là dùng anomaly cá nhân hóa hoặc thay bằng model rhythm/clinical event rõ ràng hơn.
+- Model anomaly legacy chỉ nên xem là lớp screening hỗ trợ, không phải chẩn đoán bệnh.
+- Hướng đúng hơn là train/evaluate lại anomaly bằng dữ liệu Polar thật và tách rõ noise/poor contact khỏi morphology anomaly.
 
 ### 7.5 Fall detection
 
@@ -884,8 +898,8 @@ Mức phát triển hiện tại có thể đánh giá như sau:
 | Lưu trữ local SQLite + raw CSV | Tốt cho thử nghiệm và truy vết. |
 | Rhythm classification | Có baseline rõ ràng, metrics tốt ở mức nghiên cứu/prototype. |
 | AF episode tracking | Có logic dài hạn và đánh giá AFDB, khá tốt để nghiên cứu tiếp. |
-| Emotion/stress | Hoạt động được nhưng tổng quát còn yếu. |
-| Anomaly legacy | Nên xem là tạm thời, cần calibration hoặc thay thế. |
+| Stress | Hoạt động như tín hiệu sinh lý phụ; stress F1 còn cần cải thiện trước khi dùng cho kết luận mạnh. |
+| Anomaly legacy | Screening phụ đang bật với signal-quality gate; cần train/evaluate lại bằng dữ liệu Polar thật. |
 | Personal baseline 7 ngày | Đã có progressive calibration và so sánh trong health report; vẫn là tầng diễn giải/risk, không phải model chẩn đoán. |
 | ACC activity context | Có rule rõ ràng và test cơ bản. |
 | Fall detection | Có rule nền tảng, chưa có validation thực tế. |
@@ -929,7 +943,7 @@ Model rhythm hiện tại đạt mức khả dụng cho hỗ trợ sàng lọc v
 - Dữ liệu người cao tuổi thật chưa rõ hoặc chưa đủ để đánh giá bias theo tuổi.
 - Rhythm model là feature-based ML, chưa tận dụng đầy đủ deep learning trên raw ECG.
 - `other_rhythm` còn yếu, recall khoảng 46,57%.
-- Emotion/stress chỉ dùng ECG, thiếu EDA/RESP/TEMP nên khó ổn định.
+- Stress chỉ dùng ECG, thiếu EDA/RESP/TEMP nên khó ổn định.
 - Fall detection là rule-based, chưa có validation trên ngã thật.
 - Polar H10 là single-lead ECG/strap, chất lượng phụ thuộc tiếp xúc da, chuyển động, pin, Bluetooth.
 - Chưa có cơ chế bảo mật/xác thực API trong prototype.

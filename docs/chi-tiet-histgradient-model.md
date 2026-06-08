@@ -360,8 +360,8 @@ Kết quả:
 - **Retrain trên real data:** 5 người (chinh, huy, amine, emna, vinh) × nhiều session
   - Fine-tune model cho population thực tế
   - Reduce domain gap
-- **Per-patient personalization:** đã có progressive personal baseline 7 ngày ở tầng report và anomaly calibration riêng cho từng người.
-  - Baseline hiện dùng để so sánh HR, REST HR, AF suspicion, anomaly và PVC/PAC; chưa dùng để retrain rhythm model.
+- **Per-patient personalization:** đã có progressive personal baseline 7 ngày ở tầng report; anomaly calibration cá nhân hiện tắt mặc định và chỉ bật khi baseline đủ chất lượng.
+  - Baseline hiện dùng để so sánh HR, REST HR, AF suspicion, anomaly, stress và PVC/PAC; chưa dùng để retrain rhythm model.
 
 ### 8.3 Dài hạn
 

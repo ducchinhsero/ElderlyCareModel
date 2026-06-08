@@ -13,19 +13,23 @@ This project is being reorganized around the rhythm-classification roadmap in
 - `src/`: new modular source layout for dataset builders, features, training,
   inference, API, services, storage, and dashboard code.
 - `dataset/realtime_logs/`: runtime SQLite database, raw Polar ECG/ACC logs,
-  anomaly calibration artifacts, and progressive personal baseline JSON.
+  optional anomaly calibration artifacts, and progressive personal baseline JSON.
 - `legacy/`: old notebooks/scripts kept for reference only.
 - `docs/`: mission, integration notes, and architecture documents.
 - `tests/`: unit tests.
 
-## New model target
+## Production model target
 
-The anomaly model is now legacy. The rebuild target is:
+The current runtime is rhythm-first. Global anomaly legacy still runs as a
+screening helper, but patient-specific anomaly calibration is disabled by
+default unless `ANOMALY_CALIBRATION_ENABLED=1`.
 
 ```text
 Polar H10 ECG/RR/ACC
 -> signal quality
 -> rhythm classification
+-> PVC/PAC ectopy screening
+-> global anomaly legacy screening
 -> AF episode detection
 -> AF burden
 -> progressive personal baseline comparison
@@ -44,6 +48,7 @@ Primary rhythm labels:
 ## Current compatibility note
 
 Root `pipeline.py` still runs the current dashboard/API. It now loads existing
-stress, rhythm, ectopy, and legacy anomaly artifacts from `models/` instead of root files.
+stress, rhythm, ectopy, and global legacy anomaly artifacts from `models/`
+instead of root files.
 The API also exposes `POST /personal-baseline/update-progressive` and
 `GET /personal-baseline/status` for 7-day patient-specific baseline operation.

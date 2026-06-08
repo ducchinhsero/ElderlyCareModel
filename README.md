@@ -26,8 +26,19 @@ System documentation:
 
 - `docs/model-storage-alert-system.md`: model choice, storage flow, alert flow.
 - `docs/so-sanh-rhythm-cnn-feature-model.md`: detailed CNN vs feature rhythm comparison.
+- `docs/model-training-results-report.md`: per-model training results with metrics and training images.
 - `docs/wifi-provisioning-production.md`: AP Mode -> Client Mode Wi-Fi setup for Raspberry Pi production.
 - `docs/deploy-raspberry-pi.md`: Raspberry Pi deployment and production installer.
+- `docs/clinical-arrhythmia-collection.md`: short 1-2 hour clinical arrhythmia/AFib data collection protocol.
+
+Current production runtime:
+
+- Rhythm production model: `models/rhythm/rhythm_feature_model.pkl`.
+- CNN rhythm model: research-only under `models/research/rhythm_cnn/`.
+- Stress output: binary `non_stress|stress|unknown`; public API no longer depends on legacy `emotion`.
+- Anomaly: global legacy IsolationForest is enabled by default, but patient-specific anomaly calibration is disabled by default.
+- Anomaly quality gate: poor/noisy/loose-contact ECG returns `anomaly.label = "unknown"` instead of forcing `normal` or `abnormal`.
+- Raspberry dependency pin: `scikit-learn==1.8.0` is required for the current rhythm/ectopy/anomaly pickle artifacts.
 
 Raspberry production install:
 
@@ -81,9 +92,9 @@ Generated artifacts:
 - `models/stress/model_metadata.json`
 - `models/stress/stress_feature_schema.json`
 - `models/metrics/stress_metrics.json`
-- `isolation_forest_model.pkl`
-- `anomaly_scaler.pkl`
-- `anomaly_feature_schema.json`
+- `models/anomaly_legacy/isolation_forest_model.pkl`
+- `models/anomaly_legacy/anomaly_scaler.pkl`
+- `models/anomaly_legacy/anomaly_feature_schema.json`
 - `models/rhythm/rhythm_feature_model.pkl`
 - `models/rhythm/rhythm_scaler.pkl`
 - `models/rhythm/rhythm_feature_schema.json`
@@ -160,6 +171,14 @@ Dashboard/API endpoints:
 - `POST /polar/start`
 - `POST /polar/stop`
 
+Clinical arrhythmia data collection:
+
+```powershell
+python -m src.services.collect_clinical_arrhythmia_data --participant-id p001 --condition-group confirmed_afib --clinical-source doctor_confirmed --duration-minutes 60 --address 24:AC:AC:13:EB:86
+```
+
+Use anonymous participant IDs only. Do not label every window as AFib unless there is a Holter/12-lead ECG/doctor annotation tied to time intervals. See `docs/clinical-arrhythmia-collection.md`.
+
 Long-running Raspberry Pi validation:
 
 ```bash
@@ -175,6 +194,17 @@ API_KEY=<secret>
 API_PUBLIC_PATHS=/health,/dashboard
 ALLOWED_ORIGINS=https://your-app-domain.example
 ```
+
+Production model/runtime flags:
+
+```env
+ANOMALY_ENABLED=1
+ANOMALY_CALIBRATION_ENABLED=0
+POLAR_AUTO_START=1
+POLAR_H10_MAC=24:AC:AC:13:EB:86
+```
+
+`ANOMALY_ENABLED=1` keeps the global legacy anomaly screening model active. `ANOMALY_CALIBRATION_ENABLED=0` disables patient-specific anomaly calibration by default, because calibration requires validated baseline data.
 
 Predict endpoint:
 

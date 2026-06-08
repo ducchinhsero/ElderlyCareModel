@@ -1,6 +1,6 @@
 # Trang Thai He Thong Va Roadmap Phat Trien
 
-Ngay cap nhat: 2026-05-24  
+Ngay cap nhat: 2026-06-05
 Du an: Elderly Care ECG/ACC monitoring with Polar H10, edge AI, Flutter app, MongoDB sync
 
 ## 1. Muc tieu chinh cua he thong
@@ -9,7 +9,7 @@ He thong duoc xay dung de theo doi suc khoe nguoi cao tuoi theo thoi gian thuc b
 
 Muc tieu san pham:
 
-- Theo doi realtime: heart rate, rhythm status, AFib suspicion, PVC/PAC-like activity, signal quality, fall/activity context.
+- Theo doi realtime: heart rate, rhythm status, AFib suspicion, PVC/PAC-like activity, global ECG anomaly screening, signal quality, fall/activity context.
 - Bao cao suc khoe theo thoi gian: hien tai, 24 gio, 7 ngay.
 - Canh bao bat thuong: AF suspicion, tachycardia, bradycardia, ectopy, fall candidate, poor signal.
 - Hieu chinh baseline ca nhan 7 ngay co huong dan REST/WALK/ACTIVE.
@@ -93,6 +93,7 @@ Da co:
 - Thu ECG/ACC tu Polar H10.
 - Xu ly ECG theo sample rate client gui hoac Polar H10 realtime.
 - Signal quality check.
+- Global anomaly legacy screening co signal-quality gate.
 - Tachycardia/bradycardia rule theo context.
 - Fall/activity context tu ACC.
 - Output JSON qua `/latest-result`.
@@ -143,6 +144,22 @@ Da co:
 - Event `ectopy_suspicion`.
 - Hien thi trong app/report.
 
+### 3.3.1 Global anomaly legacy
+
+Trang thai hien tai:
+
+- `ANOMALY_ENABLED=1` mac dinh.
+- `ANOMALY_CALIBRATION_ENABLED=0` mac dinh.
+- Runtime dung global legacy IsolationForest trong `models/anomaly_legacy/`.
+- Neu ECG poor/noise/loose contact, anomaly tra `unknown` thay vi ep `abnormal`.
+- Neu anomaly abnormal mot minh, alert chi o muc theo doi/medium; rhythm/AFib/fall van duoc uu tien hon.
+
+Muc tieu tiep theo:
+
+- Train/evaluate lai anomaly bang du lieu Polar H10 that.
+- Tach ro noise/poor contact khoi morphology anomaly.
+- Chi su dung calibration ca nhan khi co baseline du chat luong va da duoc validation.
+
 ### 3.4 Daily Health Assessment va Health Report
 
 Da co:
@@ -174,11 +191,13 @@ Loai event hien co:
 
 - `af_suspicion`
 - `ectopy_suspicion`
+- `ecg_anomaly`
 - `tachycardia`
 - `bradycardia`
 - `fall_candidate`
 - `poor_signal`
 - `hr_context`
+- `stress_suspicion`
 
 Endpoint:
 

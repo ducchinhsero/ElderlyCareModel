@@ -1,6 +1,6 @@
 # Tóm tắt báo cáo hệ thống Elderly Care ECG
 
-Ngày tổng hợp: 2026-05-22
+Ngày tổng hợp: 2026-06-05
 
 ## Mục tiêu
 
@@ -77,15 +77,17 @@ AFDB long-term evaluation:
 - Episode precision: 79,69%.
 - AF burden absolute error: 6,90 điểm %.
 
-Emotion/stress:
+Stress:
 
-- GroupKFold mean accuracy: 61,61%.
-- Best fold: 67,34%.
-- Full dataset accuracy 93,68% không nên dùng làm kết luận triển khai vì dễ lạc quan.
+- LOSO mean accuracy: 81,27%.
+- LOSO macro F1 mean: 77,42%.
+- LOSO stress F1 mean: 65,86%.
+- Stress chỉ là tín hiệu sinh lý phụ, cần đủ rolling RR khoảng 300 giây và không thay thế đánh giá y khoa.
 
 Anomaly và fall:
 
-- Anomaly legacy chưa có metrics đủ trong repo, nên không công bố accuracy.
+- Global anomaly legacy đang bật như screening phụ, có signal-quality gate; chưa có metrics đủ trong repo nên không công bố accuracy.
+- Patient-specific anomaly calibration tắt mặc định, chỉ bật khi đã có baseline đủ chất lượng.
 - Fall detection là rule-based, chưa có dataset ngã có nhãn để tính độ chính xác.
 
 ## Kết luận năng lực

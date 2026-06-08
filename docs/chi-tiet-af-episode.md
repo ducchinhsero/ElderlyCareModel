@@ -396,7 +396,7 @@ Episode-level (min_consecutive_windows=2):
 # src/api/pipeline.py
 
 def predict_ecg(patient_id, ecg_samples, sample_rate_hz, ...):
-    # ... signal quality, emotion, anomaly, ...
+    # ... signal quality, stress, ectopy, anomaly screening, ...
     
     # 1. Predict rhythm
     rhythm = rhythm_predictor.predict(ecg_samples, sample_rate_hz)

@@ -2,14 +2,14 @@
 
 ## Muc tieu
 
-Tich hop du lieu gia toc tu Polar H10 vao pipeline hien tai theo huong rule-based v1. He thong van giu nguyen prediction ECG/stress/anomaly hien co, dong thoi bo sung ngu canh van dong, phat hien nga va canh bao HR theo activity.
+Tich hop du lieu gia toc tu Polar H10 vao pipeline hien tai theo huong rule-based v1. He thong giu prediction ECG/stress/rhythm/anomaly screening hien co, dong thoi bo sung ngu canh van dong, phat hien nga va canh bao HR theo activity.
 
 Nguon thuat toan chinh la `D:\DATN\PolarH10\ecg_acc_collector.py`. Cac collector thu nghiem `data_collector_acc_*`, `polar_realtime_processor.py`, `polar_data_collector.py` chi dung de doi chieu khi debug BLE, khong dua vao implementation chinh.
 
 ## Yeu cau v1
 
 - ECG-only flow phai tiep tuc hoat dong khi khong co ACC.
-- ACC khong thay doi schema feature cua emotion/anomaly model hien tai.
+- ACC khong thay doi schema feature cua stress/rhythm/anomaly model hien tai; ACC duoc dung nhu context rieng cho activity, fall va HR alert.
 - Polar collector chay dual stream ECG 130 Hz va ACC 25 Hz.
 - Ket qua prediction co them `sensor_context` gom `activity_state`, `activity_features`, `fall`, `hr_context_alert`.
 - Raw ACC duoc luu song song raw ECG theo prediction/session.

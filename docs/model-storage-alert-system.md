@@ -1,10 +1,11 @@
 # Model, Storage va Alert System
 
-Ngay cap nhat: 2026-05-28
+Ngay cap nhat: 2026-06-05
 
 Tai lieu nay tom tat ba phan can nam khi van hanh va thuyet trinh he thong:
 
 - Lua chon model rhythm production.
+- Trang thai runtime cua stress, ectopy va anomaly.
 - Luong luu tru local/cloud.
 - Luong phat canh bao realtime.
 
@@ -68,6 +69,32 @@ python -m src.training.train_rhythm_cnn --dataset-dir data_processed/rhythm --mo
 ```
 
 Bao cao chi tiet: `docs/so-sanh-rhythm-cnn-feature-model.md`.
+
+### 1.4. Runtime model hien tai
+
+Production runtime trong `src.api.pipeline` hien gom:
+
+| Thanh phan | Trang thai | Ghi chu |
+|---|---|---|
+| Rhythm feature model | Production chinh | Chay tren `models/rhythm/rhythm_feature_model.pkl`; CNN khong import runtime. |
+| Stress model | Production screening | Binary `non_stress`, `stress`, `unknown`; can rolling RR buffer khoang 300 giay. |
+| PVC/PAC ectopy model | Production screening | Tao `ectopy_suspicion` khi co PVC/PAC-like activity. |
+| Global anomaly legacy | Enabled | Dung IsolationForest global trong `models/anomaly_legacy/`; co signal-quality gate. |
+| Patient-specific anomaly calibration | Disabled mac dinh | Chi bat neu dat `ANOMALY_CALIBRATION_ENABLED=1`; khong dung trong luong demo/on dinh hien tai. |
+
+Kiem tra `/health` can thay:
+
+```json
+{
+  "sklearn_version": "1.8.0",
+  "sklearn_version_ok": true,
+  "anomaly_enabled": true,
+  "anomaly_calibration_enabled": false,
+  "anomaly_runtime_status": "enabled_global_legacy"
+}
+```
+
+Anomaly chi nen xem la **screening signal**. Neu signal quality kem/noise/loose contact, anomaly tra `unknown` thay vi ep `abnormal`.
 
 ---
 
@@ -177,7 +204,7 @@ Thu tu uu tien:
 
 1. Rhythm alert duoc uu tien truoc: `possible_afib`, rhythm probability, AF episode.
 2. Risk trend co the nang muc neu lich su bat thuong lap lai.
-3. Legacy anomaly chi la phu tro, khong duoc uu tien hon rhythm neu rhythm da ro.
+3. Global anomaly legacy chi la phu tro; neu abnormal mot minh thi chi nen o muc theo doi/medium va khong duoc uu tien hon rhythm neu rhythm da ro.
 4. Fall candidate tu ACC co the nang len `high` hoac `critical`.
 5. HR context co the nang len `medium/high/critical` tuy tachycardia/bradycardia va activity.
 6. Stress chi nang toi da `medium` va bi suppress khi activity la `WALK` hoac `ACTIVE`.
@@ -189,6 +216,7 @@ Thu tu uu tien:
 |---|---|---|
 | `af_suspicion` | rhythm + rhythm_alert | medium/high/critical |
 | `ectopy_suspicion` | PVC/PAC model | medium |
+| `ecg_anomaly` | Global anomaly legacy + signal quality good/fair | medium |
 | `tachycardia` | HR rule + activity | medium |
 | `bradycardia` | HR rule | medium |
 | `hr_context` | ACC/activity + HR context | medium/high |

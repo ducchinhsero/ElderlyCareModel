@@ -465,12 +465,12 @@ Diễn giải:
 - PAC và mixed ectopic còn yếu.
 - Không nên trình bày model này như module chẩn đoán hoàn chỉnh; nên ghi là module hỗ trợ phát hiện ngoại tâm thu, đang cần mở rộng dữ liệu và cải thiện thuật toán.
 
-### 4.5 Emotion/stress model
+### 4.5 Stress model
 
 Nhiệm vụ:
 
 ```text
-HRV features → neutral / stress / relaxed
+Rolling RR/HRV features → non_stress / stress / unknown
 ```
 
 Dữ liệu:
@@ -479,8 +479,9 @@ Dữ liệu:
 
 Model:
 
-- `RandomForestClassifier`
-- GroupKFold theo subject.
+- Soft voting gồm RandomForest và SVM pipeline.
+- LOSO/GroupKFold theo subject.
+- Realtime cần rolling RR buffer khoảng 300 giây; nếu chưa đủ dữ liệu thì trả `unknown`.
 
 Đặc trưng:
 
@@ -490,6 +491,7 @@ Vai trò trong dự án:
 
 - Đây là module phụ, dùng để tham khảo trạng thái sinh lý/stress.
 - Không phải module y khoa cốt lõi bằng rhythm/AFib/fall.
+- Stress không tự nâng cảnh báo quá `medium` và bị suppress khi người dùng đang `WALK` hoặc `ACTIVE`.
 
 ### 4.6 Anomaly legacy model
 
@@ -502,8 +504,10 @@ Model anomaly legacy dùng `IsolationForest` huấn luyện trên dữ liệu no
 
 Vai trò hiện tại:
 
-- Module legacy, không còn là lõi chính.
-- Hệ thống đã chuyển trọng tâm sang rhythm classification + AF episode + signal quality + context alert vì có ý nghĩa y khoa rõ hơn.
+- Module screening phụ, không phải lõi chẩn đoán.
+- Global anomaly legacy đang bật mặc định với signal-quality gate: nếu tín hiệu kém, nhiễu hoặc nghi ngờ đeo lỏng thì trả `unknown`.
+- Patient-specific anomaly calibration tắt mặc định; chỉ bật khi `ANOMALY_CALIBRATION_ENABLED=1` và đã có baseline đủ chất lượng.
+- Hệ thống vẫn ưu tiên rhythm classification + AF episode + signal quality + context alert vì có ý nghĩa y khoa rõ hơn.
 
 ## 5. Luật cảnh báo và kết hợp model
 
