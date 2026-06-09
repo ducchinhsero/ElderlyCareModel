@@ -182,4 +182,4 @@ Service se bat AP setup o lan chay tiep theo.
 
 - Portal HTTP local trong mang setup rieng, chua dung HTTPS.
 - Chua co nut vat ly tren vo thiet bi; setup mode dung trigger file/systemd.
-- Chua day provisioning UI truc tiep vao Flutter app; app chi can huong dan nguoi dung ket noi AP va mo portal.
+- Flutter app da co man "Thiet lap Wi-Fi Raspberry" goi portal API `10.42.0.1`; browser portal van duoc giu de fallback khi app khong mo duoc.

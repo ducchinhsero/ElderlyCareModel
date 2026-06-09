@@ -1,437 +1,221 @@
-# Hướng dẫn cài đặt Raspberry Pi 5 và deploy ElderlyCareModel
+# Thiết lập Raspberry Pi cho Elderly Care
 
-## 1. Chuẩn bị
+Ngày cập nhật: 2026-06-08
 
-**Phần cứng:**
-- Raspberry Pi 5 (khuyến nghị bản 4GB hoặc 8GB)
-- Thẻ microSD ≥ 32GB (class 10/A2) hoặc SSD NVMe qua HAT
-- Nguồn USB-C 5V/5A chính hãng (Pi 5 cần dòng cao, sạc điện thoại thường không đủ)
-- Đầu đọc thẻ SD cắm vào PC Windows
-- Cáp mạng LAN (khuyến nghị cho lần đầu) hoặc WiFi
-- Tản nhiệt + quạt (Pi 5 nóng nhanh)
+Tài liệu này dùng để chuẩn bị Raspberry Pi trước khi chạy backend `ElderlyCareModel`. Phần cài backend production chi tiết nằm trong `docs/deploy-raspberry-pi.md`.
 
-**Phần mềm trên PC Windows:**
-- [Raspberry Pi Imager](https://www.raspberrypi.com/software/) — công cụ flash chính thức
-- [RealVNC Viewer](https://www.realvnc.com/en/connect/download/viewer/) — client VNC
-- PuTTY hoặc Windows Terminal (SSH)
-- Git for Windows
+## 1. Phần cứng
 
----
+- Raspberry Pi 4 hoặc 5, ưu tiên OS 64-bit.
+- microSD/SSD từ 32GB.
+- Nguồn ổn định.
+- Polar H10 + dây đeo.
+- Wi-Fi hoặc LAN cho lần setup đầu.
+- Tản nhiệt/quạt nếu chạy nhiều giờ.
 
-## 2. Flash Raspberry Pi OS lên thẻ nhớ
+## 2. Flash Raspberry Pi OS
 
-### Bước 1: Mở Raspberry Pi Imager
+Dùng Raspberry Pi Imager:
 
-1. Chọn **Device** → `Raspberry Pi 5`
-2. Chọn **Operating System** → `Raspberry Pi OS (64-bit)` (bản Bookworm Desktop, không chọn Lite vì cần GUI cho VNC)
-3. Chọn **Storage** → chọn thẻ SD của bạn
+1. Chọn Raspberry Pi OS 64-bit.
+2. Bật SSH.
+3. Hostname khuyến nghị: `elderlycare`.
+4. Username đang dùng trong project hiện tại: `elcaprj`.
+5. Đặt password mạnh.
+6. Có thể cấu hình Wi-Fi ban đầu nếu biết SSID/password.
+7. Locale: `Asia/Ho_Chi_Minh`, keyboard `us`.
 
-### Bước 2: Cấu hình trước (rất quan trọng)
+Sau khi ghi thẻ, cắm vào Pi và cấp nguồn. Đợi 1-3 phút.
 
-Click **Next** → chọn **EDIT SETTINGS**:
+## 3. SSH vào Pi
 
-**Tab General:**
-```
-Hostname:     elderlycare-pi
-Username:     huy
-Password:     <mật khẩu mạnh>
-Wireless LAN: <SSID + password WiFi nhà bạn>
-Wireless LAN country: VN
-Locale:       Asia/Ho_Chi_Minh, keyboard: us
-```
-
-**Tab Services:**
-- ☑ Enable SSH
-- ☑ Use password authentication
-
-Click **Save** → **Yes** → xác nhận xóa thẻ SD → đợi 5–10 phút.
-
-### Bước 3: Boot lần đầu
-
-1. Tháo thẻ SD khỏi PC, cắm vào Pi 5
-2. Cắm cáp LAN (hoặc dùng WiFi đã cấu hình)
-3. Cắm nguồn → đèn xanh nhấp nháy → đợi 2–3 phút cho lần boot đầu
-
----
-
-## 3. Kết nối SSH lần đầu
-
-Từ PowerShell trên Windows:
+Từ Windows PowerShell:
 
 ```powershell
-ssh huy@elderlycare-pi.local
+ssh elcaprj@elderlycare.local
 ```
 
-Nếu `.local` không resolve được, tìm IP qua router hoặc:
+Nếu không vào được bằng `.local`, lấy IP từ router hoặc trên màn hình Pi:
+
+```bash
+hostname -I
+ip addr show wlan0
+```
+
+SSH bằng IP:
 
 ```powershell
-ping elderlycare-pi.local
+ssh elcaprj@<IP_RASPBERRY>
 ```
 
-Sau khi vào được, update hệ thống:
+Nếu gặp cảnh báo host key changed sau khi đổi thẻ/mạng:
 
-```bash
-sudo apt update && sudo apt full-upgrade -y
-sudo apt install -y git python3-pip python3-venv build-essential
-```
-
----
-
-## 3.1 Đem Pi sang nơi khác (không có mạng cũ)
-
-**Vấn đề:** WiFi được cấu hình lúc flash OS chỉ có ở nơi ban đầu. Khi mang Pi sang nơi khác, sẽ không có WiFi đó.
-
-**Giải pháp:** Có **4 cách chính**:
-
-### **Cách 1: Thêm nhiều WiFi trước khi đi (khuyến nghị)**
-
-Khi còn ở nơi cũ, thêm sẵn **3-4 WiFi có thể gặp**:
-
-```bash
-ssh huy@elderlycare-pi.local
-sudo nano /etc/wpa_supplicant/wpa_supplicant.conf
-```
-
-Cuộn xuống cuối file, thêm các network mới:
-
-```ini
-# Hiện tại
-network={
-    ssid="WiFi-nhà-gốc"
-    psk="password-gốc"
-    key_mgmt=WPA-PSK
-}
-
-# Thêm WiFi phòng khám/bệnh viện
-network={
-    ssid="WiFi-phòng-khám"
-    psk="password1"
-    key_mgmt=WPA-PSK
-}
-
-# Thêm WiFi khách sạn
-network={
-    ssid="WiFi-khách-sạn"
-    psk="password2"
-    key_mgmt=WPA-PSK
-}
-
-# **Quan trọng nhất:** Thêm hotspot laptop Windows
-network={
-    ssid="Laptop-Hotspot"
-    psk="hotspotpass"
-    key_mgmt=WPA-PSK
-}
-```
-
-Lưu (Ctrl+X → Y → Enter)
-
-**Khi đến nơi mới:**
-- Bật **Mobile Hotspot** trên laptop Windows: Settings → Network & internet → Mobile hotspot → On
-- Pi sẽ tự kết nối vào hotspot trong 10-15 giây
-- SSH từ Windows: `ssh huy@elderlycare-pi.local` (vẫn dùng hostname được)
-
-### **Cách 2: Kết nối WiFi mới tại chỗ (nếu có màn hình + bàn phím)**
-
-Nếu mang theo HDMI + USB hub trên Pi, có thể kết nối WiFi qua GUI:
-- Desktop → WiFi icon (góc trên cùng) → chọn mạng → nhập password
-
-Hoặc dùng `nmtui` (text-based):
-```bash
-nmtui
-```
-
-### **Cách 3: USB-C to Ethernet (không cần WiFi)**
-
-Khi không có WiFi nào khả dụng:
-
-1. Mua **USB-C to Ethernet adapter** (≈ 150k, phải hỗ trợ Power Delivery cho Pi 5)
-2. Cắm cáp mạng LAN vào adapter → cắm vào Pi 5
-3. Pi sẽ nhận IP qua DHCP (192.168.x.x)
-4. Tìm IP:
 ```powershell
-arp -a | findstr /I "raspberry\|pi\|elderlycare"
-# hoặc quét toàn bộ mạng (cần cài nmap trước)
-nmap -sn 192.168.1.0/24
+ssh-keygen -R elderlycare.local
+ssh-keygen -R <IP_CU>
 ```
-5. SSH: `ssh huy@<IP-tìm-được>`
 
-**Ưu điểm:** Ổn định, không phụ thuộc WiFi, vẫn có internet qua LAN
-
-### **Cách 4: Pi thành WiFi Access Point (phát WiFi)**
-
-Pi **phát** WiFi thay vì **kết nối** WiFi — bạn kết nối vào Pi (offline):
+## 4. Cập nhật hệ thống
 
 ```bash
-sudo apt install -y hostapd dnsmasq
-sudo nano /etc/hostapd/hostapd.conf
+sudo apt update
+sudo apt full-upgrade -y
+sudo reboot
 ```
 
-Thêm:
-```ini
-interface=wlan0
-driver=nl80211
-ssid=ElderlyCare-Pi-AP
-hw_mode=g
-channel=6
-wpa=2
-wpa_passphrase=your_secure_password
-wpa_key_mgmt=WPA-PSK
-wpa_pairwise=CCMP
-```
+SSH lại sau reboot:
 
-```bash
-sudo systemctl enable hostapd
-sudo systemctl restart hostapd
-```
-
-Từ laptop Windows, kết nối vào WiFi `ElderlyCare-Pi-AP` → SSH:
 ```powershell
-ssh huy@192.168.4.1  # IP mặc định của Pi khi chế độ AP
+ssh elcaprj@elderlycare.local
 ```
 
-**Nhưng nhược điểm:** Pi không kết nối internet nữa (chỉ local network với laptop)
+## 5. Bật VNC nếu cần giao diện
 
----
-
-### **🎯 Recommendation cho use case của bạn:**
-
-**Nếu di chuyển thường xuyên:** Dùng **Cách 1** (thêm sẵn WiFi) + **Mobile Hotspot laptop**
-- Đơn giản, không cần phần cứng thêm, vẫn có internet
-- Pi tự kết nối, SSH từ Windows như bình thường
-
-**Nếu không có WiFi nào có sẵn:** Dùng **Cách 3** (USB-C Ethernet)
-- Ổn định, không phụ thuộc WiFi
-- Chi phí adapter ≈ 150k
-
-**Nếu muốn offline (không cần internet):** Dùng **Cách 4** (Pi Access Point)
-- Pi phát WiFi, laptop kết nối vào
-- Chỉ local network, không internet
-
----
-
-## 4. Bật và cấu hình VNC trên Pi 5
-
-Raspberry Pi OS Bookworm dùng **Wayland + WayVNC** mặc định (không phải RealVNC Server cũ).
-
-### Cách 1: Dùng raspi-config (đơn giản)
+Nếu dùng Raspberry Pi OS Desktop:
 
 ```bash
 sudo raspi-config
 ```
 
-- `3 Interface Options` → `I3 VNC` → **Yes** để bật
-- `6 Advanced Options` → `A6 Wayland` → chọn `W1 X11` (để dùng RealVNC tương thích tốt hơn) hoặc giữ Wayland nếu dùng WayVNC
-- `1 System Options` → `S5 Boot / Auto Login` → `B4 Desktop Autologin`
-- `2 Display Options` → `D5 VNC Resolution` → chọn `1280x720` hoặc `1920x1080`
-- **Finish** → reboot
+Chọn:
 
-### Cách 2: Cài RealVNC Server (nếu muốn dùng VNC Viewer của RealVNC)
+- `Interface Options` -> `VNC` -> enable.
+- `Display Options` -> `VNC Resolution` -> chọn `1280x720` hoặc `1920x1080`.
+- Reboot nếu được yêu cầu.
+
+Kết nối bằng VNC Viewer:
+
+```text
+elderlycare.local:5900
+```
+
+hoặc:
+
+```text
+<IP_RASPBERRY>:5900
+```
+
+Nếu đang dùng Bookworm/Wayland và VNC không ổn định, chuyển sang X11 trong `raspi-config` hoặc dùng SSH là chính cho production.
+
+## 6. Cài backend production
+
+Clone repo:
 
 ```bash
-sudo apt install -y realvnc-vnc-server
-sudo systemctl enable vncserver-x11-serviced
-sudo systemctl start vncserver-x11-serviced
+cd /home/elcaprj
+git clone https://github.com/ducchinhsero/ElderlyCareModel.git elderly_care
+cd elderly_care
 ```
 
-Đặt mật khẩu VNC:
-```bash
-sudo vncpasswd -service
-```
-
-### Kiểm tra VNC đã chạy
+Cài production:
 
 ```bash
-sudo systemctl status vncserver-x11-serviced
-# hoặc với WayVNC:
-sudo systemctl status wayvnc
+bash scripts/install_pi_production.sh
 ```
 
----
-
-## 5. Kết nối từ máy Windows qua VNC Viewer
-
-1. Mở **RealVNC Viewer** trên Windows
-2. Nhập địa chỉ: `elderlycare-pi.local:5900` (hoặc IP của Pi)
-3. Nhập username/password đã đặt
-4. Màn hình desktop Pi 5 hiện ra
-
-**Lưu ý:** nếu Pi không có HDMI cắm, mặc định độ phân giải sẽ bé tí. Fix bằng cách thiết lập độ phân giải ảo:
+Hoặc set MAC Polar ngay:
 
 ```bash
-sudo nano /boot/firmware/cmdline.txt
+POLAR_H10_MAC=24:AC:AC:13:EB:86 bash scripts/install_pi_production.sh
 ```
 
-Thêm vào cuối dòng (không xuống dòng):
-```
-video=HDMI-A-1:1920x1080@60D
-```
-
-Reboot: `sudo reboot`
-
----
-
-## 6. Cài đặt môi trường Python cho ElderlyCareModel
-
-### Clone code
+Kiểm tra:
 
 ```bash
-cd ~
-git clone <URL-repo-của-bạn> ElderlyCareModel
-cd ElderlyCareModel
+sudo systemctl status elderly-care --no-pager
+sudo systemctl status elderly-care-wifi-provisioner --no-pager
+curl -s http://127.0.0.1:8000/health | python3 -m json.tool
 ```
 
-Nếu repo private, dùng SSH key hoặc Personal Access Token.
+## 7. Mang Pi sang nơi mới
 
-### Tạo virtual environment
+Chuẩn hiện tại của dự án vẫn dùng `wlan0` và Wi-Fi provisioning:
+
+1. Pi cố kết nối Wi-Fi đã lưu.
+2. Nếu không kết nối được, service `elderly-care-wifi-provisioner` phát AP `ElderlyCare-Setup-XXXX`.
+3. Người dùng kết nối điện thoại/laptop vào AP này.
+4. Mở app màn "Thiết lập Wi-Fi Raspberry" hoặc browser `http://10.42.0.1`.
+5. Chọn Wi-Fi nhà, nhập password.
+6. Pi tắt AP và chuyển sang Wi-Fi nhà nếu thông tin đúng.
+7. App truy cập backend qua `elderlycare.local:8000` hoặc IP mới.
+
+Không tự cấu hình AP thủ công bằng `hostapd.conf` cho dự án này. Production service điều khiển AP qua NetworkManager.
+
+## 8. Kiểm tra Raspberry đang chạy và thu tín hiệu
+
+Backend:
 
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install --upgrade pip wheel
+sudo systemctl is-active elderly-care
+curl -s http://127.0.0.1:8000/health | python3 -m json.tool
 ```
 
-### Cài dependencies
+Polar:
 
 ```bash
-pip install -r requirements.txt
+sudo timeout 15 bluetoothctl --timeout 10 scan on 2>&1 | grep -i polar
+curl -s http://127.0.0.1:8000/health | python3 -m json.tool | grep -A30 '"polar"'
 ```
 
-**Lưu ý cho Pi 5:** runtime production dùng venv và `requirements.txt`. Không cài `python3-sklearn` bằng apt cho project này, vì artifact rhythm/ectopy cần đúng `scikit-learn==1.8.0` từ pip trong venv.
+Dữ liệu mới nhất:
 
 ```bash
-python -c "import sklearn; print(sklearn.__version__)"
+curl -s http://127.0.0.1:8000/latest-result | python3 -m json.tool
 ```
 
-Kết quả cần là `1.8.0`. Nếu sai, chạy:
+Log:
 
 ```bash
-pip install --force-reinstall --no-cache-dir scikit-learn==1.8.0
+tail -f /home/elcaprj/elderly_care/logs/uvicorn.log
+sudo journalctl -u elderly-care -f
+sudo journalctl -u elderly-care-wifi-provisioner -f
 ```
 
-Nếu có TFLite (suy luận inference cho stress/ectopy):
-```bash
-pip install tflite-runtime
+## 9. Lỗi thường gặp
+
+### Không SSH được
+
+- Kiểm tra Pi đã cùng mạng với máy Windows.
+- Kiểm tra IP trên router.
+- Nếu `.local` không resolve, dùng IP trực tiếp.
+- Nếu host key changed, chạy `ssh-keygen -R`.
+
+### App/browser mở `0.0.0.0:8000` không được
+
+`0.0.0.0` là địa chỉ server bind, không phải địa chỉ client truy cập. Dùng:
+
+```text
+http://elderlycare.local:8000
+http://<IP_RASPBERRY>:8000
 ```
 
-### Cài MQTT broker (cho vai trò Wearer)
-
-```bash
-sudo apt install -y mosquitto mosquitto-clients
-sudo systemctl enable mosquitto
-sudo systemctl start mosquitto
-```
-
-Test: `mosquitto_sub -t test &` rồi `mosquitto_pub -t test -m "hello"`
-
----
-
-## 7. Deploy code từ Windows lên Pi 5
-
-### Cách 1: Git pull (khuyến nghị)
-
-Push code từ Windows lên GitHub/GitLab, rồi trên Pi:
-```bash
-cd ~/ElderlyCareModel
-git pull
-```
-
-### Cách 2: SCP đẩy thẳng
-
-Từ PowerShell trên Windows:
-```powershell
-scp -r C:\Users\huyma\Desktop\ElderlyCareModel\src huy@elderlycare-pi.local:~/ElderlyCareModel/
-```
-
-### Cách 3: rsync (đồng bộ delta, nhanh hơn)
-
-Cài rsync trong WSL hoặc Git Bash trên Windows:
-```bash
-rsync -avz --exclude='.venv' --exclude='__pycache__' --exclude='.git' \
-    /c/Users/huyma/Desktop/ElderlyCareModel/ \
-    huy@elderlycare-pi.local:~/ElderlyCareModel/
-```
-
-### Cách 4: VS Code Remote SSH (tiện nhất khi dev)
-
-1. Cài extension **Remote - SSH** trên VS Code
-2. `Ctrl+Shift+P` → `Remote-SSH: Connect to Host` → `huy@elderlycare-pi.local`
-3. Mở thư mục `~/ElderlyCareModel` — chỉnh sửa và chạy trực tiếp trên Pi
-
----
-
-## 8. Chạy hệ thống
-
-### Test thủ công (qua SSH hoặc VNC terminal)
+### Polar không tự thu sau boot
 
 ```bash
-cd ~/ElderlyCareModel
-source .venv/bin/activate
-python3 -m src.main --role wearer
+grep '^POLAR_AUTO_START' /home/elcaprj/elderly_care/.env
+sudo systemctl restart elderly-care
 ```
 
-### Tự động chạy khi boot (systemd service)
+Giá trị production phải là:
 
-Tạo file service:
+```env
+POLAR_AUTO_START=1
+```
+
+### AP Wi-Fi setup hiện lại sau khi gửi cấu hình
+
+Thường là Pi không kết nối được Wi-Fi nhà. Kiểm tra trạng thái:
+
 ```bash
-sudo nano /etc/systemd/system/elderlycare.service
+cd /home/elcaprj/elderly_care
+sudo .venv/bin/python -m src.network.provisioning --status
+sudo journalctl -u elderly-care-wifi-provisioner -n 100 --no-pager
 ```
 
-Nội dung:
-```ini
-[Unit]
-Description=ElderlyCare Wearer Service
-After=network-online.target mosquitto.service
-Wants=network-online.target
+Nếu lỗi `802-11-wireless-security.key-mgmt`, cập nhật code mới nhất và chạy lại installer để dùng bản provisioning đã thêm `wpa-psk` rõ ràng.
 
-[Service]
-Type=simple
-User=huy
-WorkingDirectory=/home/huy/ElderlyCareModel
-Environment="PATH=/home/huy/ElderlyCareModel/.venv/bin"
-ExecStart=/home/huy/ElderlyCareModel/.venv/bin/python -m src.main --role wearer
-Restart=on-failure
-RestartSec=5
+## 10. Tài liệu tiếp theo
 
-[Install]
-WantedBy=multi-user.target
-```
-
-Kích hoạt:
-```bash
-sudo systemctl daemon-reload
-sudo systemctl enable elderlycare.service
-sudo systemctl start elderlycare.service
-sudo systemctl status elderlycare.service
-```
-
-Xem log realtime:
-```bash
-journalctl -u elderlycare.service -f
-```
-
----
-
-## 9. Troubleshooting thường gặp
-
-| Vấn đề | Cách xử lý |
-|---|---|
-| VNC kết nối được nhưng màn hình đen | Bật `Desktop Autologin` trong raspi-config; nếu dùng Wayland đổi sang X11 |
-| `Cannot currently show the desktop` | Pi không có HDMI → cần set `video=HDMI-A-1:1920x1080@60D` trong cmdline.txt |
-| Pi 5 throttle / tắt đột ngột | Nguồn yếu — phải dùng adapter 5V/5A chính hãng |
-| `pip install` báo lỗi build | `sudo apt install python3-dev libffi-dev libssl-dev` |
-| Không ping được `*.local` | Cài Bonjour trên Windows hoặc dùng IP trực tiếp; check qua `arp -a` |
-| Service không start | `journalctl -u elderlycare -n 100` xem lỗi chi tiết |
-| GPIO/I2C cho cảm biến không hoạt động | `sudo raspi-config` → Interface → bật I2C/SPI/Serial |
-
----
-
-## 10. Checklist hoàn thành
-
-- [ ] Pi boot được và SSH vào được qua hostname
-- [ ] VNC Viewer kết nối thấy desktop ở độ phân giải mong muốn
-- [ ] `git pull` hoặc `scp` đẩy được code lên `~/ElderlyCareModel`
-- [ ] `python -m src.main` chạy không lỗi import
-- [ ] Mosquitto broker `active (running)`
-- [ ] systemd service tự khởi động sau `sudo reboot`
-- [ ] Log không có lỗi sau 5 phút chạy
+- `docs/deploy-raspberry-pi.md`: cài backend production.
+- `docs/wifi-provisioning-production.md`: chi tiết Wi-Fi AP setup.
+- `README.md`: tổng quan backend/API/model.
