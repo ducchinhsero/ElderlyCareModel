@@ -3,8 +3,13 @@ from src.assessment.daily_health_assessment import (
     SEVERITY_ORDER,
     compute_daily_health_assessment,
 )
+from src.assessment.longterm_pathology import compute_longterm_pathology_assessment
 from src.calibration.personal_baseline import compare_history_to_baseline, load_personal_baseline
-from src.storage.ecg_storage import build_event_timeline, compute_daily_summary, get_history
+from src.storage.ecg_storage import (
+    build_event_timeline,
+    compute_period_summary,
+    get_history,
+)
 
 
 DEFAULT_REALTIME_MINUTES = 5.0
@@ -221,7 +226,7 @@ def _long_term_layer(patient_id=None, days=DEFAULT_LONG_TERM_DAYS, db_path=None)
     if db_path is not None:
         summary_kwargs["db_path"] = db_path
         events_kwargs["db_path"] = db_path
-    daily_summary = compute_daily_summary(**summary_kwargs)
+    daily_summary = compute_period_summary(**summary_kwargs)
     events = build_event_timeline(**events_kwargs).get("events") or []
 
     window_count = int(daily_summary.get("window_count") or 0)
@@ -385,6 +390,11 @@ def build_temporal_health_report(
         history_kwargs["db_path"] = db_path
     baseline = load_personal_baseline(resolved_patient_id) if resolved_patient_id else None
     personal_baseline = compare_history_to_baseline(get_history(**history_kwargs), baseline)
+    pathology = compute_longterm_pathology_assessment(
+        patient_id=resolved_patient_id,
+        days=long_term_days,
+        db_path=db_path,
+    )
     levels = [
         realtime.get("overall", {}).get("level"),
         daily.get("overall", {}).get("level"),
@@ -402,6 +412,7 @@ def build_temporal_health_report(
             "long_term": long_term,
         },
         "personal_baseline": personal_baseline,
+        "pathology": pathology,
         "overall": {
             "level": overall_level,
             "summary": "Highest current risk/suspicion level across realtime, daily, and long-term layers.",

@@ -39,9 +39,11 @@ class BackgroundSyncTests(unittest.TestCase):
                     sync_func=lambda **kwargs: {"status": "synced", "raw_chunk_count": 3, **kwargs},
                     purge_func=lambda **kwargs: {"purged": 2, **kwargs},
                     storage_status_func=lambda: {"counts": {"raw_signal_chunks": 1}},
+                    maintenance_func=lambda **kwargs: {"finalized_rollup_count": 0},
                 )
 
                 self.assertEqual(result["status"], "ok")
+                self.assertEqual(result["rollup_maintenance"]["finalized_rollup_count"], 0)
                 self.assertEqual(result["sync"]["raw_chunk_count"], 3)
                 self.assertEqual(result["purge"]["purged"], 2)
                 self.assertTrue(Path(config.log_path).exists())
@@ -65,6 +67,7 @@ class BackgroundSyncTests(unittest.TestCase):
                     config=config,
                     configured_func=lambda: False,
                     sync_func=lambda **kwargs: self.fail("sync should not run"),
+                    maintenance_func=lambda **kwargs: {"finalized_rollup_count": 0},
                 )
 
                 self.assertEqual(result["status"], "skipped")

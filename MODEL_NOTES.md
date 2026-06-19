@@ -340,9 +340,47 @@ Tất cả định nghĩa tại `src/api/pipeline.py:1883-2407`. Server: `uvicor
 | GET | `/session-summary` | `patient_id?`, `days=1` | Sessions + overall counts |
 | GET | `/daily-summary` | `patient_id?`, `days=7` | Theo từng ngày |
 | GET | `/daily-health-assessment` | `patient_id?`, `hours=24` | Findings + recommendations, level từ `low/medium/high/critical/unknown` |
-| GET | `/health-report` | `patient_id?`, `realtime_minutes=5`, `daily_hours=24`, `long_term_days=7` | 3 layers: realtime / daily / long_term + personal_baseline comparisons |
+| GET | `/health-report` | `patient_id?`, `realtime_minutes=5`, `daily_hours=24`, `long_term_days=7` | 3 layers: realtime / daily / long_term + personal_baseline comparisons + `pathology` block (xem dưới) |
+| GET | `/pathology-report` | `patient_id?`, `days=7` | Long-term pathology screening: recurrence/burden/trend theo từng ngày + referral suggestions (KHÔNG phải chẩn đoán) |
+| GET | `/period-comparison` | `patient_id?`, `window_days=7` | So sánh kỳ này vs kỳ trước (mỗi metric: current/previous/delta/direction ∈ improving/worsening/stable/up/down/unknown) + `worsening_metrics[]`. Snapshot `period_comparison` |
 | GET | `/events` | `patient_id?`, `days=1`, `limit=200` | `{event_count, events[]}` — event_type ∈ {`af_suspicion`, `tachycardia`, `bradycardia`, `ectopy_suspicion`, `stress_suspicion`, `hr_context`, `fall_candidate`, `poor_signal`} |
 | POST | `/events/rebuild` | `{patient_id?, days?, limit?}` | Build lại event timeline từ predictions |
+
+#### Output `/pathology-report` (cũng là `health_report.pathology`)
+
+Lớp sàng lọc bệnh lý dài hạn (`src/assessment/longterm_pathology.py`). Đây là **rule layer xác định**, không phải model chẩn đoán: phân tích **tái diễn theo từng ngày + burden + xu hướng**, đã hiệu chỉnh theo chất lượng tín hiệu. Mỗi indicator có `referral` dạng gợi ý đi khám.
+
+```jsonc
+{
+  "report_type": "longterm_pathology_assessment",
+  "period": {"mode": "rolling_days", "days": 7.0, "analyzed_day_count": 6,
+             "adequate_day_count": 5, "prediction_count": 420, "start_timestamp": "...", "end_timestamp": "..."},
+  "data_quality": {"label": "insufficient | preview | confident",
+                   "analyzed_day_count": 6, "adequate_day_count": 5,
+                   "adequate_day_ratio": 0.83, "mean_good_signal_ratio": 0.91, "prediction_count": 420},
+  "overall": {"level": "unknown | low | medium | high | critical", "score": 0.8, "summary": "..."},
+  "indicators": [
+    {
+      "type": "atrial_fibrillation_burden | heart_rate_abnormality_burden | ectopy_burden | fall_activity_risk | monitoring_quality | personal_baseline_deviation",
+      "level": "low | medium | high | critical",
+      "title": "Recurrent AFib-like pattern",
+      "reason": "...",
+      "recurrence": {"days_present": 3, "adequate_day_count": 5, "recurrence_ratio": 0.6},
+      "burden": {"mean_af_burden_percent": 8.6, "max_af_burden_percent": 12.0, "max_afib_probability": 0.85, "...": "..."},
+      "trend": "increasing | stable | decreasing | insufficient",
+      "referral": "...discuss with medical staff...",
+      "evidence": {"present_days": ["2026-06-01", "..."]}
+    }
+  ],
+  "recommendations": ["..."],
+  "disclaimer": "This is a screening/risk assessment output, not a medical diagnosis."
+}
+```
+
+- Một ngày chỉ tính vào `recurrence` nếu "đủ tin cậy": `window_count >= 10` và `good_signal_ratio >= 0.5`.
+- `monitoring_quality` xuất hiện khi coverage thấp → cảnh báo "không có bất thường" có thể chỉ do thiếu dữ liệu, không phải thật sự bình thường.
+- `fall_activity_risk` được báo cả trên ngày coverage kém (té ngã luôn quan trọng).
+- App nên render `indicators[]` với `level` màu + `referral` text; KHÔNG hiển thị như chẩn đoán.
 
 ### 4.4. Storage / Sync
 
@@ -356,6 +394,8 @@ Tất cả định nghĩa tại `src/api/pipeline.py:1883-2407`. Server: `uvicor
 | POST | `/storage/sync-mongodb` | Sync ngay (alias `/sync/mongodb`) |
 | POST | `/sync/mongodb` | Body: `{patient_id?, days?, limit?, include_raw_samples?}` |
 | POST | `/storage/purge-synced` | `{retention_hours?, limit?}` |
+| POST | `/storage/rollups/rebuild` | `{patient_id?, days?}` — backfill/refresh bảng `daily_rollups` (1 dòng/ngày, nền cho báo cáo dài hạn không bị trần 5000) |
+| GET | `/storage/rollups` | `patient_id?`, `days=30` — đọc per-day rollups (lazy finalize: ngày quá khứ cache, hôm nay tính lại) |
 | GET | `/storage/sync-scheduler/status` | Background scheduler status |
 | POST | `/storage/sync-scheduler/start` | Body: BackgroundSyncConfig fields (interval_seconds, patient_id, days, limit, purge_after_sync, ...) |
 | POST | `/storage/sync-scheduler/stop` | — |
@@ -549,7 +589,8 @@ Bảng chính:
 - `raw_signal_chunks` (chunk_id PK, signal_type ∈ {ecg, acc}, timestamp_start_unix, sample_rate_hz, sample_count, channel_count, encoding, **payload_blob** zlib-compressed, is_baseline_usable, is_synced, …). Encoding: `int32_le_zlib` cho ECG, `float32x4_le_zlib` cho ACC (x_mg,y_mg,z_mg,vm_mg).
 - `guided_baseline_sessions`, `guided_baseline_segments`.
 - `collection_sessions`, `collection_segments`.
-- `assessment_snapshots` (snapshot_type ∈ {risk_summary, session_summary, daily_summary, daily_health_assessment, health_report}, payload_json, period_json).
+- `assessment_snapshots` (snapshot_type ∈ {risk_summary, session_summary, daily_summary, daily_health_assessment, health_report, longterm_pathology_assessment}, payload_json, period_json).
+- `daily_rollups` (rollup_id PK = `{patient_id}:{YYYY-MM-DD}`, 1 dòng/ngày/bệnh nhân: HR mean/min/max + rest_heart_rate_mean, AF ratio/max_burden/af_suspected_seconds, ectopy/event counts, good_signal_ratio, `is_final`, `is_synced`). Nền cho báo cáo dài hạn 7/30/90 ngày qua `compute_period_summary` — bỏ trần 5000 cửa sổ của `get_history`. `/health-report` (long_term) và `/pathology-report` đọc nguồn này. Đồng bộ MongoDB ở collection `daily_rollups`.
 
 ---
 
@@ -617,6 +658,7 @@ Bảng chính:
 | Activity classification | `src/features/acc_features.py:126-130` |
 | Fall detection | `src/features/acc_features.py:133-259` |
 | AF episode logic | `src/inference/af_episode_tracker.py:20-77` |
+| Long-term pathology layer | `src/assessment/longterm_pathology.py` |
 | Personal baseline build | `src/calibration/personal_baseline.py:197-291` |
 | Guided baseline plan | `src/calibration/guided_baseline.py:16-39` |
 | Dashboard HTML cũ (reference) | `src/api/pipeline.py:1216-1881` |

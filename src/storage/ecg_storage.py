@@ -40,6 +40,63 @@ ECG_CHUNK_ENCODING = "int32_le_zlib"
 ACC_CHUNK_ENCODING = "float32x4_le_zlib"
 SAVE_LEGACY_RAW_CSV = os.getenv("SAVE_LEGACY_RAW_CSV", "0").strip().lower() in {"1", "true", "yes"}
 
+URGENT_EVENT_TYPES = {
+    "fall_candidate",
+    "af_suspicion",
+    "sustained_tachycardia_immobile",
+    "sustained_bradycardia_immobile",
+    "critical_hr_immobile",
+}
+URGENT_EVENT_SQL = "(" + ",".join("?" for _ in URGENT_EVENT_TYPES) + ")"
+REALTIME_NOTIFICATION_EVENT_TYPES = {
+    "tachycardia",
+    "bradycardia",
+}
+REALTIME_NOTIFICATION_EVENT_SQL = (
+    "(" + ",".join("?" for _ in REALTIME_NOTIFICATION_EVENT_TYPES) + ")"
+)
+IMMOBILE_ACTIVITY_STATES = {"REST", "SLOW_WALK"}
+IMMOBILE_MAX_ACC_VM_STD_MG = 90.0
+SUSTAINED_MAX_GAP_SECONDS = 75.0
+SUSTAINED_HR_RULES = (
+    {
+        "direction": "high",
+        "event_type": "critical_hr_immobile",
+        "severity": "critical",
+        "label": "critical_tachycardia_immobile",
+        "threshold_bpm": 130.0,
+        "duration_seconds": 60.0,
+        "message": "Dangerously high heart rate while the user appears immobile.",
+    },
+    {
+        "direction": "low",
+        "event_type": "critical_hr_immobile",
+        "severity": "critical",
+        "label": "critical_bradycardia_immobile",
+        "threshold_bpm": 40.0,
+        "duration_seconds": 60.0,
+        "message": "Dangerously low heart rate while the user appears immobile.",
+    },
+    {
+        "direction": "high",
+        "event_type": "sustained_tachycardia_immobile",
+        "severity": "high",
+        "label": "sustained_tachycardia_immobile",
+        "threshold_bpm": 110.0,
+        "duration_seconds": 180.0,
+        "message": "High heart rate persisted while the user appears immobile.",
+    },
+    {
+        "direction": "low",
+        "event_type": "sustained_bradycardia_immobile",
+        "severity": "high",
+        "label": "sustained_bradycardia_immobile",
+        "threshold_bpm": 45.0,
+        "duration_seconds": 120.0,
+        "message": "Low heart rate persisted while the user appears immobile.",
+    },
+)
+
 # Per-DB initialization guard. init_db() runs heavy DDL + a one-time backfill;
 # guard against running it on every get_connection() call (was a hot-path
 # bottleneck — full table scan per request).
@@ -327,6 +384,53 @@ def init_db(conn):
             updated_at TEXT NOT NULL
         )
         """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS daily_rollups (
+            rollup_id TEXT PRIMARY KEY,
+            patient_id TEXT NOT NULL,
+            day TEXT NOT NULL,
+            window_count INTEGER NOT NULL DEFAULT 0,
+            duration_seconds REAL,
+            mean_heart_rate_bpm REAL,
+            min_heart_rate_bpm REAL,
+            max_heart_rate_bpm REAL,
+            rest_heart_rate_mean REAL,
+            mean_afib_probability REAL,
+            max_afib_probability REAL,
+            af_suspicion_window_count INTEGER NOT NULL DEFAULT 0,
+            af_suspicion_window_ratio REAL,
+            max_af_burden_percent REAL,
+            af_suspected_seconds REAL,
+            ectopy_window_count INTEGER NOT NULL DEFAULT 0,
+            pvc_window_count INTEGER NOT NULL DEFAULT 0,
+            pac_window_count INTEGER NOT NULL DEFAULT 0,
+            tachycardia_event_count INTEGER NOT NULL DEFAULT 0,
+            bradycardia_event_count INTEGER NOT NULL DEFAULT 0,
+            sustained_immobile_event_count INTEGER NOT NULL DEFAULT 0,
+            critical_hr_event_count INTEGER NOT NULL DEFAULT 0,
+            af_suspicion_event_count INTEGER NOT NULL DEFAULT 0,
+            ectopy_event_count INTEGER NOT NULL DEFAULT 0,
+            fall_event_count INTEGER NOT NULL DEFAULT 0,
+            poor_signal_event_count INTEGER NOT NULL DEFAULT 0,
+            stress_event_count INTEGER NOT NULL DEFAULT 0,
+            good_signal_window_count INTEGER NOT NULL DEFAULT 0,
+            poor_signal_window_count INTEGER NOT NULL DEFAULT 0,
+            good_signal_ratio REAL,
+            stress_window_count INTEGER NOT NULL DEFAULT 0,
+            metrics_json TEXT NOT NULL DEFAULT '{}',
+            is_final INTEGER NOT NULL DEFAULT 0,
+            is_synced INTEGER NOT NULL DEFAULT 0,
+            synced_at TEXT,
+            updated_at TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_daily_rollups_patient_day "
+        "ON daily_rollups(patient_id, day)"
     )
     columns = {row[1] for row in conn.execute("PRAGMA table_info(predictions)").fetchall()}
     if "sensor_context_json" not in columns:
@@ -877,6 +981,187 @@ def _make_event(item, event_type, severity, label, message, metadata=None):
     return event
 
 
+def is_urgent_event(event):
+    return (
+        str(event.get("severity") or "").lower() in {"high", "critical"}
+        and str(event.get("event_type") or "") in URGENT_EVENT_TYPES
+    )
+
+
+def is_realtime_alert_event(event):
+    """Return true for events that should surface as caregiver notifications.
+
+    High/critical events remain urgent. Single-window tachycardia/bradycardia
+    are medium-severity warnings, but still need to be visible in realtime
+    notification surfaces when detected during reliable monitoring.
+    """
+    event_type = str(event.get("event_type") or "")
+    severity = str(event.get("severity") or "").lower()
+    if severity in {"high", "critical"} and event_type in URGENT_EVENT_TYPES:
+        return True
+    return severity == "medium" and event_type in REALTIME_NOTIFICATION_EVENT_TYPES
+
+
+def _is_reliable_hr_context(item):
+    quality = ((item.get("signal_quality") or {}).get("label") or "unknown").lower()
+    return quality in {"good", "fair", "unknown", ""}
+
+
+def _acc_vm_std(item):
+    features = ((item.get("sensor_context") or {}).get("activity_features") or {})
+    value = features.get("acc_vm_std")
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _is_immobile_context(item):
+    sensor = item.get("sensor_context") or {}
+    activity = str(sensor.get("activity_state") or "").upper()
+    if activity not in IMMOBILE_ACTIVITY_STATES:
+        return False
+    acc_std = _acc_vm_std(item)
+    return acc_std is None or acc_std <= IMMOBILE_MAX_ACC_VM_STD_MG
+
+
+def _matches_sustained_hr_rule(item, rule):
+    if not _is_reliable_hr_context(item) or not _is_immobile_context(item):
+        return False
+    hr = item.get("heart_rate_bpm")
+    if hr is None:
+        return False
+    try:
+        hr = float(hr)
+    except (TypeError, ValueError):
+        return False
+    if rule["direction"] == "high":
+        return hr >= rule["threshold_bpm"]
+    return hr <= rule["threshold_bpm"]
+
+
+def _recent_prediction_results(conn, item, lookback_seconds=600, limit=120):
+    timestamp_epoch = item.get("timestamp_epoch") or timestamp_to_epoch(item.get("timestamp"))
+    if timestamp_epoch is None:
+        return [item]
+    patient_id = item.get("patient_id")
+    since_epoch = float(timestamp_epoch) - float(lookback_seconds)
+    params = [since_epoch, float(timestamp_epoch)]
+    where = "timestamp_epoch >= ? AND timestamp_epoch <= ?"
+    if patient_id is None:
+        where += " AND patient_id IS NULL"
+    else:
+        where += " AND patient_id = ?"
+        params.append(patient_id)
+    params.append(int(limit))
+    rows = conn.execute(
+        f"SELECT * FROM predictions WHERE {where} "
+        "ORDER BY timestamp_epoch DESC, timestamp DESC LIMIT ?",
+        params,
+    ).fetchall()
+    results = [_row_to_result(row) for row in rows]
+    if not any(result.get("prediction_id") == item.get("prediction_id") for result in results):
+        results.append(item)
+    return sorted(
+        results,
+        key=lambda result: (
+            result.get("timestamp_epoch") or timestamp_to_epoch(result.get("timestamp")) or 0.0,
+            result.get("timestamp") or "",
+        ),
+    )
+
+
+def _streak_for_rule(history, current_item, rule):
+    current_epoch = current_item.get("timestamp_epoch") or timestamp_to_epoch(current_item.get("timestamp"))
+    if current_epoch is None or not _matches_sustained_hr_rule(current_item, rule):
+        return None
+
+    streak = []
+    previous_epoch = None
+    for item in reversed(history):
+        epoch = item.get("timestamp_epoch") or timestamp_to_epoch(item.get("timestamp"))
+        if epoch is None or epoch > current_epoch:
+            continue
+        if previous_epoch is not None and previous_epoch - epoch > SUSTAINED_MAX_GAP_SECONDS:
+            break
+        if not _matches_sustained_hr_rule(item, rule):
+            break
+        streak.append(item)
+        previous_epoch = epoch
+
+    if not streak:
+        return None
+    streak = list(reversed(streak))
+    start_epoch = streak[0].get("timestamp_epoch") or timestamp_to_epoch(streak[0].get("timestamp"))
+    duration = float(current_epoch) - float(start_epoch or current_epoch)
+    previous_duration = 0.0
+    if len(streak) > 1:
+        previous_item = streak[-2]
+        previous_epoch = previous_item.get("timestamp_epoch") or timestamp_to_epoch(previous_item.get("timestamp"))
+        previous_duration = float(previous_epoch or current_epoch) - float(start_epoch or current_epoch)
+    return {
+        "duration_seconds": duration,
+        "previous_duration_seconds": previous_duration,
+        "streak": streak,
+    }
+
+
+def build_sustained_hr_events(conn, item):
+    history = _recent_prediction_results(conn, item)
+    events = []
+    for rule in SUSTAINED_HR_RULES:
+        streak_info = _streak_for_rule(history, item, rule)
+        if not streak_info:
+            continue
+        if streak_info["duration_seconds"] < rule["duration_seconds"]:
+            continue
+        if streak_info["previous_duration_seconds"] >= rule["duration_seconds"]:
+            continue
+
+        streak = streak_info["streak"]
+        hrs = [float(row["heart_rate_bpm"]) for row in streak if row.get("heart_rate_bpm") is not None]
+        metadata = {
+            "sustained_alert_context": {
+                "direction": rule["direction"],
+                "threshold_bpm": rule["threshold_bpm"],
+                "min_duration_seconds": rule["duration_seconds"],
+                "duration_seconds": round(streak_info["duration_seconds"], 3),
+                "streak_count": len(streak),
+                "activity_states": sorted(
+                    {
+                        str(((row.get("sensor_context") or {}).get("activity_state") or "unknown")).upper()
+                        for row in streak
+                    }
+                ),
+                "acc_vm_std_values": [
+                    _acc_vm_std(row)
+                    for row in streak
+                    if _acc_vm_std(row) is not None
+                ],
+                "heart_rate_min_bpm": round(min(hrs), 2) if hrs else None,
+                "heart_rate_max_bpm": round(max(hrs), 2) if hrs else None,
+                "heart_rate_mean_bpm": round(sum(hrs) / len(hrs), 2) if hrs else None,
+                "started_at": streak[0].get("timestamp"),
+                "ended_at": item.get("timestamp"),
+            }
+        }
+        events.append(
+            _make_event(
+                item,
+                rule["event_type"],
+                rule["severity"],
+                rule["label"],
+                rule["message"],
+                metadata,
+            )
+        )
+        if rule["severity"] == "critical":
+            break
+    return events
+
+
 def build_events_for_prediction(item):
     events = []
     rhythm = item.get("rhythm") or {}
@@ -970,16 +1255,11 @@ def build_events_for_prediction(item):
 
     hr_context = (item.get("sensor_context") or {}).get("hr_context_alert") or {}
     if hr_context.get("level") in {"WATCH", "ALERT", "CRITICAL"}:
-        hr_context_severity = {
-            "WATCH": "medium",
-            "ALERT": "high",
-            "CRITICAL": "critical",
-        }.get(hr_context.get("level"), "medium")
         events.append(
             _make_event(
                 item,
                 "hr_context",
-                hr_context_severity,
+                "medium",
                 hr_context.get("level"),
                 hr_context.get("reason") or "Heart-rate context requires monitoring.",
                 {"hr_context_alert": hr_context},
@@ -1166,7 +1446,10 @@ def save_prediction(
                 utc_now_iso(),
             ),
         )
-        _insert_events(conn, build_events_for_prediction(result))
+        events = build_events_for_prediction(result)
+        events.extend(build_sustained_hr_events(conn, result))
+        result["events"] = events
+        _insert_events(conn, events)
         conn.commit()
     finally:
         conn.close()
@@ -1760,8 +2043,17 @@ def get_realtime_alerts(
     limit = _positive_int(limit, "limit")
     hours = _positive_float(hours, "hours")
     since = datetime.now(timezone.utc) - timedelta(hours=hours)
-    params = [since.timestamp()]
-    where = "timestamp_epoch >= ? AND severity IN ('high', 'critical')"
+    params = [
+        since.timestamp(),
+        *sorted(URGENT_EVENT_TYPES),
+        *sorted(REALTIME_NOTIFICATION_EVENT_TYPES),
+    ]
+    where = (
+        f"timestamp_epoch >= ? AND ("
+        f"(severity IN ('high', 'critical') AND event_type IN {URGENT_EVENT_SQL}) "
+        f"OR (severity = 'medium' AND event_type IN {REALTIME_NOTIFICATION_EVENT_SQL})"
+        f")"
+    )
     if patient_id:
         where += " AND patient_id = ?"
         params.append(patient_id)
@@ -1988,7 +2280,10 @@ def alert_delivery_status(patient_id=None, db_path=DB_PATH):
         unacknowledged = conn.execute(
             f"""
             SELECT COUNT(*) FROM events e
-            WHERE e.severity IN ('high', 'critical')
+            WHERE (
+                (e.severity IN ('high', 'critical') AND e.event_type IN {URGENT_EVENT_SQL})
+                OR (e.severity = 'medium' AND e.event_type IN {REALTIME_NOTIFICATION_EVENT_SQL})
+              )
               {patient_filter}
               AND NOT EXISTS (
                 SELECT 1 FROM alert_acknowledgements a
@@ -1996,7 +2291,11 @@ def alert_delivery_status(patient_id=None, db_path=DB_PATH):
                   AND a.status IN ('acknowledged', 'resolved')
               )
             """,
-            params,
+            [
+                *sorted(URGENT_EVENT_TYPES),
+                *sorted(REALTIME_NOTIFICATION_EVENT_TYPES),
+                *params,
+            ],
         ).fetchone()[0]
         webhook_rows = conn.execute(
             """
@@ -2009,6 +2308,7 @@ def alert_delivery_status(patient_id=None, db_path=DB_PATH):
         conn.close()
     return {
         "unacknowledged_urgent_count": int(unacknowledged or 0),
+        "unacknowledged_realtime_alert_count": int(unacknowledged or 0),
         "webhook_outbox": {row["status"]: row["count"] for row in webhook_rows},
     }
 
@@ -2020,6 +2320,7 @@ def rebuild_event_table(patient_id=None, days=30, limit=50000, db_path=DB_PATH):
     try:
         for item in history:
             events = build_events_for_prediction(item)
+            events.extend(build_sustained_hr_events(conn, item))
             _insert_events(conn, events)
             inserted += len(events)
         conn.commit()
@@ -2219,6 +2520,418 @@ def compute_daily_summary(patient_id=None, days=7, db_path=DB_PATH):
         "overall": _summary_for_items(history),
         "days": day_rows,
     }
+
+
+# ---------------------------------------------------------------------------
+# Daily rollups: one pre-aggregated row per (patient, day) so long-term reports
+# can span weeks/months without hitting the get_history row cap. Past days are
+# finalised once (immutable); "today" is recomputed on read.
+# ---------------------------------------------------------------------------
+ROLLUP_TZ = timezone.utc  # day-boundary timezone (switch to a fixed offset for local days)
+ROLLUP_WINDOW_SECONDS = 30.0
+
+
+def _today_rollup_day(now=None):
+    now_dt = (now or datetime.now(ROLLUP_TZ)).astimezone(ROLLUP_TZ)
+    return now_dt.date().isoformat()
+
+
+def _day_epoch_bounds(day):
+    start = datetime.fromisoformat(day).replace(tzinfo=ROLLUP_TZ)
+    return start.timestamp(), (start + timedelta(days=1)).timestamp()
+
+
+def _patient_where(patient_id, params):
+    if patient_id is None:
+        return " AND patient_id IS NULL"
+    params.append(patient_id)
+    return " AND patient_id = ?"
+
+
+def _predictions_for_day(conn, patient_id, day):
+    start_epoch, end_epoch = _day_epoch_bounds(day)
+    params = [start_epoch, end_epoch]
+    where = "timestamp_epoch >= ? AND timestamp_epoch < ?" + _patient_where(patient_id, params)
+    rows = conn.execute(
+        f"SELECT * FROM predictions WHERE {where} ORDER BY timestamp_epoch ASC",
+        params,
+    ).fetchall()
+    return [_row_to_result(row) for row in rows]
+
+
+def _event_counts_for_day(conn, patient_id, day):
+    start_epoch, end_epoch = _day_epoch_bounds(day)
+    params = [start_epoch, end_epoch]
+    where = "timestamp_epoch >= ? AND timestamp_epoch < ?" + _patient_where(patient_id, params)
+    rows = conn.execute(
+        f"SELECT event_type, COUNT(*) AS n FROM events WHERE {where} GROUP BY event_type",
+        params,
+    ).fetchall()
+    return {row["event_type"]: int(row["n"]) for row in rows}
+
+
+def _compute_rollup_for_day(conn, patient_id, day, now=None):
+    items = _predictions_for_day(conn, patient_id, day)
+    summary = _summary_for_items(items)
+    event_counts = _event_counts_for_day(conn, patient_id, day)
+    af_count = sum(1 for it in items if _af_suspicion(it))
+    ectopy_counts = summary.get("ectopy_counts") or {}
+    pvc = int(ectopy_counts.get("pvc") or 0)
+    pac = int(ectopy_counts.get("pac") or 0)
+    mixed = int(ectopy_counts.get("mixed_ectopic") or 0)
+    quality_counts = summary.get("quality_counts") or {}
+    good = sum(int(quality_counts.get(k) or 0) for k in ("good", "fair"))
+    poor = sum(
+        int(quality_counts.get(k) or 0)
+        for k in ("poor", "noise", "poor_contact", "motion_artifact")
+    )
+    stress_counts = summary.get("stress_counts") or {}
+    rest_hrs = [
+        float(it["heart_rate_bpm"])
+        for it in items
+        if it.get("heart_rate_bpm") is not None
+        and str(((it.get("sensor_context") or {}).get("activity_state") or "")).upper() == "REST"
+    ]
+    return {
+        "rollup_id": f"{patient_id or 'unknown'}:{day}",
+        "patient_id": patient_id,
+        "day": day,
+        "window_count": int(summary.get("window_count") or 0),
+        "duration_seconds": summary.get("duration_seconds"),
+        "mean_heart_rate_bpm": summary.get("mean_heart_rate_bpm"),
+        "min_heart_rate_bpm": summary.get("min_heart_rate_bpm"),
+        "max_heart_rate_bpm": summary.get("max_heart_rate_bpm"),
+        "rest_heart_rate_mean": round(sum(rest_hrs) / len(rest_hrs), 2) if rest_hrs else None,
+        "mean_afib_probability": summary.get("mean_afib_probability"),
+        "max_afib_probability": summary.get("max_afib_probability"),
+        "af_suspicion_window_count": af_count,
+        "af_suspicion_window_ratio": summary.get("af_suspicion_window_ratio"),
+        "max_af_burden_percent": summary.get("max_af_burden_percent"),
+        "af_suspected_seconds": round(af_count * ROLLUP_WINDOW_SECONDS, 1),
+        "ectopy_window_count": pvc + pac + mixed,
+        "pvc_window_count": pvc,
+        "pac_window_count": pac,
+        "tachycardia_event_count": int(event_counts.get("tachycardia", 0)),
+        "bradycardia_event_count": int(event_counts.get("bradycardia", 0)),
+        "sustained_immobile_event_count": int(event_counts.get("sustained_tachycardia_immobile", 0))
+        + int(event_counts.get("sustained_bradycardia_immobile", 0)),
+        "critical_hr_event_count": int(event_counts.get("critical_hr_immobile", 0)),
+        "af_suspicion_event_count": int(event_counts.get("af_suspicion", 0)),
+        "ectopy_event_count": int(event_counts.get("ectopy_suspicion", 0)),
+        "fall_event_count": int(event_counts.get("fall_candidate", 0)),
+        "poor_signal_event_count": int(event_counts.get("poor_signal", 0)),
+        "stress_event_count": int(event_counts.get("stress_suspicion", 0)),
+        "good_signal_window_count": good,
+        "poor_signal_window_count": poor,
+        "good_signal_ratio": summary.get("good_signal_ratio"),
+        "stress_window_count": int(stress_counts.get("stress") or 0),
+        "metrics_json": json.dumps(
+            {
+                "event_counts": event_counts,
+                "rhythm_counts": summary.get("rhythm_counts"),
+                "activity_counts": summary.get("activity_counts"),
+                "hr_event_counts": summary.get("hr_event_counts"),
+            },
+            ensure_ascii=False,
+        ),
+        "is_final": 1 if day < _today_rollup_day(now) else 0,
+    }
+
+
+def _upsert_daily_rollup(conn, rollup):
+    now_iso = utc_now_iso()
+    cols = list(rollup.keys())
+    placeholders = ",".join("?" for _ in cols)
+    update_cols = ",".join(f"{c}=excluded.{c}" for c in cols if c != "rollup_id")
+    conn.execute(
+        f"INSERT INTO daily_rollups ({','.join(cols)}, updated_at, created_at) "
+        f"VALUES ({placeholders}, ?, ?) "
+        f"ON CONFLICT(rollup_id) DO UPDATE SET {update_cols}, "
+        f"updated_at=excluded.updated_at, is_synced=0",
+        [rollup[c] for c in cols] + [now_iso, now_iso],
+    )
+
+
+def _row_to_rollup(row):
+    data = {key: row[key] for key in row.keys()}
+    try:
+        data["metrics"] = json.loads(data.get("metrics_json") or "{}")
+    except (TypeError, ValueError):
+        data["metrics"] = {}
+    return data
+
+
+def get_daily_rollups(patient_id=None, days=7, db_path=DB_PATH, now=None):
+    days = max(1, int(days))
+    now_dt = (now or datetime.now(ROLLUP_TZ)).astimezone(ROLLUP_TZ)
+    today = now_dt.date()
+    day_list = [(today - timedelta(days=offset)).isoformat() for offset in range(days)]
+    day_list.reverse()
+    conn = get_connection(db_path)
+    results = []
+    try:
+        for day in day_list:
+            rollup_id = f"{patient_id or 'unknown'}:{day}"
+            row = conn.execute(
+                "SELECT * FROM daily_rollups WHERE rollup_id = ?", (rollup_id,)
+            ).fetchone()
+            if row is not None and int(row["is_final"]) == 1:
+                results.append(_row_to_rollup(row))
+                continue
+            computed = _compute_rollup_for_day(conn, patient_id, day, now=now_dt)
+            if computed["window_count"] == 0 and row is None:
+                continue  # no data that day — do not persist empty rows
+            _upsert_daily_rollup(conn, computed)
+            stored = conn.execute(
+                "SELECT * FROM daily_rollups WHERE rollup_id = ?", (rollup_id,)
+            ).fetchone()
+            results.append(_row_to_rollup(stored))
+        conn.commit()
+    finally:
+        conn.close()
+    return results
+
+
+def compute_period_summary(patient_id=None, days=7, db_path=DB_PATH, now=None):
+    """Long-term aggregate over daily_rollups. Same shape as compute_daily_summary
+    so the temporal/pathology layers can consume it, but without the row cap."""
+    return _period_summary_from_rollups(
+        get_daily_rollups(patient_id=patient_id, days=days, db_path=db_path, now=now)
+    )
+
+
+def _aggregate_rollup_overall(rollups):
+    total_windows = sum(int(r["window_count"] or 0) for r in rollups)
+
+    def _isum(key):
+        return sum(int(r[key] or 0) for r in rollups)
+
+    rest_vals = [
+        float(r["rest_heart_rate_mean"])
+        for r in rollups
+        if r.get("rest_heart_rate_mean") is not None
+    ]
+    hr_event_count = (
+        _isum("tachycardia_event_count")
+        + _isum("bradycardia_event_count")
+        + _isum("sustained_immobile_event_count")
+        + _isum("critical_hr_event_count")
+    )
+    return {
+        "window_count": total_windows,
+        "day_count": len(rollups),
+        "max_afib_probability": max(
+            [float(r["max_afib_probability"] or 0.0) for r in rollups], default=0.0
+        ),
+        "max_af_burden_percent": max(
+            [float(r["max_af_burden_percent"] or 0.0) for r in rollups], default=0.0
+        ),
+        "af_suspicion_window_ratio": round(_isum("af_suspicion_window_count") / total_windows, 4)
+        if total_windows
+        else 0.0,
+        "good_signal_ratio": round(_isum("good_signal_window_count") / total_windows, 4)
+        if total_windows
+        else 0.0,
+        "af_suspected_seconds": round(sum(float(r["af_suspected_seconds"] or 0.0) for r in rollups), 1),
+        "tachycardia_event_count": _isum("tachycardia_event_count"),
+        "bradycardia_event_count": _isum("bradycardia_event_count"),
+        "sustained_immobile_event_count": _isum("sustained_immobile_event_count"),
+        "critical_hr_event_count": _isum("critical_hr_event_count"),
+        "hr_event_count": hr_event_count,
+        "af_suspicion_event_count": _isum("af_suspicion_event_count"),
+        "ectopy_event_count": _isum("ectopy_event_count"),
+        "fall_event_count": _isum("fall_event_count"),
+        "poor_signal_event_count": _isum("poor_signal_event_count"),
+        "rest_heart_rate_mean": round(sum(rest_vals) / len(rest_vals), 2) if rest_vals else None,
+    }
+
+
+def _period_summary_from_rollups(rollups):
+    total_windows = sum(int(r["window_count"] or 0) for r in rollups)
+    day_rows = [
+        {
+            "day": r["day"],
+            "window_count": r["window_count"],
+            "duration_seconds": r["duration_seconds"],
+            "mean_heart_rate_bpm": r["mean_heart_rate_bpm"],
+            "min_heart_rate_bpm": r["min_heart_rate_bpm"],
+            "max_heart_rate_bpm": r["max_heart_rate_bpm"],
+            "rest_heart_rate_mean": r["rest_heart_rate_mean"],
+            "mean_afib_probability": r["mean_afib_probability"],
+            "max_afib_probability": r["max_afib_probability"],
+            "af_suspicion_window_ratio": r["af_suspicion_window_ratio"],
+            "max_af_burden_percent": r["max_af_burden_percent"],
+            "good_signal_ratio": r["good_signal_ratio"],
+            "ectopy_counts": {"pvc": r["pvc_window_count"], "pac": r["pac_window_count"]},
+            "event_counts": (r.get("metrics") or {}).get("event_counts", {}),
+        }
+        for r in rollups
+    ]
+    return {
+        "day_count": len(rollups),
+        "window_count": total_windows,
+        "overall": _aggregate_rollup_overall(rollups),
+        "days": day_rows,
+        "source": "daily_rollups",
+    }
+
+
+_COMPARISON_METRICS = (
+    ("af_suspected_seconds", "bad"),
+    ("af_suspicion_window_ratio", "bad"),
+    ("max_afib_probability", "bad"),
+    ("hr_event_count", "bad"),
+    ("ectopy_event_count", "bad"),
+    ("fall_event_count", "bad"),
+    ("good_signal_ratio", "good"),
+    ("rest_heart_rate_mean", "neutral"),
+)
+# Relative change below this is reported as "stable" (noise floor).
+COMPARISON_STABLE_RATIO = 0.10
+
+
+def _delta_entry(current, previous, kind):
+    if current is None or previous is None:
+        return {"current": current, "previous": previous, "delta": None, "direction": "unknown"}
+    cur = float(current)
+    prev = float(previous)
+    delta = cur - prev
+    rel = (cur - prev) / max(abs(prev), 1e-9)
+    if abs(rel) < COMPARISON_STABLE_RATIO:
+        direction = "stable"
+    elif kind == "good":
+        direction = "improving" if cur > prev else "worsening"
+    elif kind == "neutral":
+        direction = "up" if cur > prev else "down"
+    else:  # "bad" metric: more is worse
+        direction = "worsening" if cur > prev else "improving"
+    return {
+        "current": round(cur, 4),
+        "previous": round(prev, 4),
+        "delta": round(delta, 4),
+        "direction": direction,
+    }
+
+
+def compute_period_comparison(patient_id=None, window_days=7, db_path=DB_PATH, now=None):
+    """Compare the most recent ``window_days`` against the preceding window."""
+    window_days = max(1, int(window_days))
+    now_dt = (now or datetime.now(ROLLUP_TZ)).astimezone(ROLLUP_TZ)
+    today = now_dt.date()
+    rollups = get_daily_rollups(
+        patient_id=patient_id, days=window_days * 2, db_path=db_path, now=now_dt
+    )
+    current_start = (today - timedelta(days=window_days - 1)).isoformat()
+    prev_start = (today - timedelta(days=2 * window_days - 1)).isoformat()
+    prev_end = (today - timedelta(days=window_days)).isoformat()
+    current = [r for r in rollups if r["day"] >= current_start]
+    previous = [r for r in rollups if prev_start <= r["day"] <= prev_end]
+
+    current_overall = _aggregate_rollup_overall(current)
+    previous_overall = _aggregate_rollup_overall(previous)
+    deltas = {
+        key: _delta_entry(current_overall.get(key), previous_overall.get(key), kind)
+        for key, kind in _COMPARISON_METRICS
+    }
+    worsening = [k for k, v in deltas.items() if v["direction"] == "worsening"]
+    return {
+        "patient_id": patient_id,
+        "window_days": window_days,
+        "has_previous": len(previous) > 0,
+        "current": {"start_day": current_start, "end_day": today.isoformat(), **current_overall},
+        "previous": {"start_day": prev_start, "end_day": prev_end, **previous_overall},
+        "deltas": deltas,
+        "worsening_metrics": worsening,
+    }
+
+
+def rebuild_daily_rollups(patient_id=None, days=90, db_path=DB_PATH, now=None):
+    days = max(1, int(days))
+    now_dt = (now or datetime.now(ROLLUP_TZ)).astimezone(ROLLUP_TZ)
+    today = now_dt.date()
+    conn = get_connection(db_path)
+    rebuilt = 0
+    try:
+        for offset in range(days):
+            day = (today - timedelta(days=offset)).isoformat()
+            computed = _compute_rollup_for_day(conn, patient_id, day, now=now_dt)
+            if computed["window_count"] == 0:
+                continue
+            _upsert_daily_rollup(conn, computed)
+            rebuilt += 1
+        conn.commit()
+    finally:
+        conn.close()
+    return {"patient_id": patient_id, "days": days, "rebuilt_day_count": rebuilt}
+
+
+def run_rollup_maintenance(patient_id=None, lookback_days=2, db_path=DB_PATH, now=None):
+    """Finalise recent daily rollups so long-term data persists/syncs without a
+    report read. Lazily computes today + finalises completed days. When
+    ``patient_id`` is None, maintains every patient seen in the recent window."""
+    lookback_days = max(1, int(lookback_days))
+    now_dt = (now or datetime.now(ROLLUP_TZ)).astimezone(ROLLUP_TZ)
+    if patient_id is not None:
+        patients = [patient_id]
+    else:
+        since = (now_dt - timedelta(days=lookback_days + 1)).timestamp()
+        conn = get_connection(db_path)
+        try:
+            rows = conn.execute(
+                "SELECT DISTINCT patient_id FROM predictions WHERE timestamp_epoch >= ?",
+                (since,),
+            ).fetchall()
+        finally:
+            conn.close()
+        patients = [row[0] for row in rows]
+    finalized = 0
+    for pid in patients:
+        rollups = get_daily_rollups(
+            patient_id=pid, days=lookback_days, db_path=db_path, now=now_dt
+        )
+        finalized += sum(1 for r in rollups if int(r.get("is_final") or 0) == 1)
+    return {
+        "patient_count": len(patients),
+        "patients": patients,
+        "finalized_rollup_count": finalized,
+    }
+
+
+def get_unsynced_daily_rollups(patient_id=None, limit=1000, db_path=DB_PATH):
+    params = []
+    where = "is_synced = 0"
+    if patient_id is not None:
+        where += " AND patient_id = ?"
+        params.append(patient_id)
+    params.append(int(limit))
+    conn = get_connection(db_path)
+    try:
+        rows = conn.execute(
+            f"SELECT * FROM daily_rollups WHERE {where} ORDER BY day ASC LIMIT ?",
+            params,
+        ).fetchall()
+        return [_row_to_rollup(row) for row in rows]
+    finally:
+        conn.close()
+
+
+def mark_daily_rollups_synced(ids, db_path=DB_PATH):
+    ids = list(ids or [])
+    if not ids:
+        return {"updated": 0}
+    placeholders = ",".join("?" for _ in ids)
+    params = [utc_now_iso(), *ids]
+    conn = get_connection(db_path)
+    try:
+        cursor = conn.execute(
+            f"UPDATE daily_rollups SET is_synced = 1, synced_at = ? WHERE rollup_id IN ({placeholders})",
+            params,
+        )
+        conn.commit()
+        updated = cursor.rowcount
+    finally:
+        conn.close()
+    return {"updated": updated}
 
 
 def _build_event_timeline_from_predictions(patient_id=None, days=1, limit=200, db_path=DB_PATH):

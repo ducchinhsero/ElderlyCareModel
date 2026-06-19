@@ -13,6 +13,8 @@ import pandas as pd
 import sklearn
 
 from src.assessment.daily_health_assessment import compute_daily_health_assessment
+from src.assessment.daily_report import compute_daily_report, list_available_report_days
+from src.assessment.longterm_pathology import compute_longterm_pathology_assessment
 from src.assessment.temporal_health_report import compute_temporal_health_report
 from src.config.runtime_config import load_sensor_context_config, sensor_context_config_path
 from src.features.acc_features import (
@@ -58,6 +60,7 @@ from src.storage.ecg_storage import (
     acknowledge_alert,
     alert_delivery_status,
     compute_daily_summary,
+    compute_period_comparison,
     compute_risk_summary,
     compute_session_summary,
     enqueue_alert_webhook,
@@ -67,11 +70,14 @@ from src.storage.ecg_storage import (
     get_latest_ecg,
     get_realtime_alerts,
     get_raw_chunk,
+    get_daily_rollups,
     get_raw_chunks,
     get_collection_sessions,
+    is_realtime_alert_event,
     mark_alert_webhook_delivered,
     mark_alert_webhook_failed,
     purge_synced_raw_chunks,
+    rebuild_daily_rollups,
     rebuild_event_table,
     resolve_alert,
     save_assessment_snapshot,
@@ -493,11 +499,10 @@ def _broadcast_result(result):
 def _urgent_events_for_result(result):
     if not result:
         return []
-    return [
-        event
-        for event in build_events_for_prediction(result)
-        if str(event.get("severity") or "").lower() in {"high", "critical"}
-    ]
+    events = result.get("events")
+    if events is None:
+        events = build_events_for_prediction(result)
+    return [event for event in events if is_realtime_alert_event(event)]
 
 
 def _alert_websocket_payload(event):
@@ -575,8 +580,9 @@ def _push_alert_webhook(result):
         return
     events = [
         event
-        for event in build_events_for_prediction(result)
-        if str(event.get("severity") or event.get("level") or "").lower()
+        for event in (result.get("events") or build_events_for_prediction(result))
+        if is_realtime_alert_event(event)
+        and str(event.get("severity") or event.get("level") or "").lower()
         in ALERT_WEBHOOK_LEVELS
     ]
     if not events:
@@ -638,7 +644,7 @@ def _publish_mqtt(result):
         # Never let MQTT failure poison the pipeline.
         print(f"MQTT publish_vitals error (non-fatal): {exc}")
     try:
-        events = build_events_for_prediction(result)
+        events = result.get("events") or build_events_for_prediction(result)
         mqtt_publisher.publish_alert(result, events=events)
     except Exception as exc:  # noqa: BLE001
         print(f"MQTT publish_alert error (non-fatal): {exc}")
@@ -916,11 +922,7 @@ def _apply_sensor_context_alert(alert_level, message, sensor_context):
 
     hr_context = sensor_context.get("hr_context_alert") or {}
     hr_level = hr_context.get("level")
-    if hr_level == "CRITICAL" and alert_level not in ("critical",):
-        return "critical", hr_context.get("reason") or "Critical heart-rate context detected."
-    if hr_level == "ALERT" and alert_level not in ("critical", "high"):
-        return "high", hr_context.get("reason") or "Heart-rate context alert detected."
-    if hr_level == "WATCH" and alert_level in ("normal", "unknown"):
+    if hr_level in {"WATCH", "ALERT", "CRITICAL"} and alert_level in ("normal", "unknown"):
         return "medium", hr_context.get("reason") or "Heart-rate context requires monitoring."
     return alert_level, message
 
@@ -1749,6 +1751,14 @@ if FastAPI is not None:
       color: white;
       border-color: #172033;
     }
+    input {
+      border: 1px solid var(--line);
+      background: #ffffff;
+      color: var(--text);
+      border-radius: 6px;
+      padding: 9px 10px;
+      min-width: 190px;
+    }
     button:disabled {
       opacity: 0.45;
       cursor: not-allowed;
@@ -1825,6 +1835,9 @@ if FastAPI is not None:
       <div class="sub" id="updated">Waiting for data</div>
     </div>
     <div class="actions">
+      <input id="dashboard-api-key" type="password" placeholder="API key" autocomplete="off" />
+      <button onclick="saveDashboardApiKey()">Save key</button>
+      <button onclick="clearDashboardApiKey()">Clear key</button>
       <button class="primary" id="start-polar" onclick="startPolar()">Start Polar</button>
       <button id="stop-polar" onclick="stopPolar()">Stop Polar</button>
       <button id="mark-baseline" onclick="markBaseline()">Mark Normal Baseline</button>
@@ -1979,6 +1992,23 @@ if FastAPI is not None:
         <div class="sub" id="session-summary">No session summary yet</div>
       </div>
       <div class="card wide">
+        <div class="label">Canh bao nhip tim bat thuong (realtime)</div>
+        <div class="sub" id="hr-alerts-summary">Chua co canh bao</div>
+        <table class="history" style="margin-top:12px">
+          <thead>
+            <tr>
+              <th>Thoi gian</th>
+              <th>Loai</th>
+              <th>Nhip (bpm)</th>
+              <th>Hoat dong</th>
+              <th>Muc</th>
+              <th>Noi dung</th>
+            </tr>
+          </thead>
+          <tbody id="hr-alerts"></tbody>
+        </table>
+      </div>
+      <div class="card wide">
         <div class="label">Event timeline</div>
         <table class="history">
           <thead>
@@ -2000,6 +2030,56 @@ if FastAPI is not None:
     </section>
   </main>
   <script>
+    const API_KEY_STORAGE_KEY = "elderlyCareDashboardApiKey";
+    function getDashboardApiKey() {
+      return localStorage.getItem(API_KEY_STORAGE_KEY) || "";
+    }
+    function setDashboardApiKey(value) {
+      const key = (value || "").trim();
+      if (key) localStorage.setItem(API_KEY_STORAGE_KEY, key);
+      else localStorage.removeItem(API_KEY_STORAGE_KEY);
+      const input = document.getElementById("dashboard-api-key");
+      if (input) input.value = key;
+    }
+    function initDashboardApiKey() {
+      const params = new URLSearchParams(window.location.search);
+      const queryKey = params.get("api_key");
+      if (queryKey) {
+        setDashboardApiKey(queryKey);
+        params.delete("api_key");
+        const cleanQuery = params.toString();
+        const cleanUrl = window.location.pathname + (cleanQuery ? `?${cleanQuery}` : "") + window.location.hash;
+        window.history.replaceState({}, document.title, cleanUrl);
+      } else {
+        setDashboardApiKey(getDashboardApiKey());
+      }
+    }
+    function saveDashboardApiKey() {
+      setDashboardApiKey(document.getElementById("dashboard-api-key").value);
+      refresh();
+    }
+    function clearDashboardApiKey() {
+      setDashboardApiKey("");
+      refresh();
+    }
+    async function apiFetch(url, options = {}) {
+      const headers = new Headers(options.headers || {});
+      const key = getDashboardApiKey();
+      if (key && !headers.has("X-API-Key")) {
+        headers.set("X-API-Key", key);
+      }
+      const response = await fetch(url, {...options, headers});
+      if (response.status === 401) {
+        throw new Error("API key missing or invalid. Enter the backend API key and press Save key.");
+      }
+      if (response.status === 503) {
+        throw new Error("API authentication is enabled but backend API_KEY is not configured.");
+      }
+      if (!response.ok) {
+        throw new Error(`${response.status} ${response.statusText}`);
+      }
+      return response;
+    }
     function formatNumber(value, fallback = "--") {
       return value === null || value === undefined ? fallback : value;
     }
@@ -2215,6 +2295,42 @@ if FastAPI is not None:
       document.getElementById("daily-health-recommendation").textContent =
         (assessment?.recommendations || []).join(" ") || assessment?.disclaimer || "--";
     }
+    function renderRealtimeAlerts(payload) {
+      const tbody = document.getElementById("hr-alerts");
+      const summary = document.getElementById("hr-alerts-summary");
+      tbody.innerHTML = "";
+      const alerts = payload?.alerts || [];
+      const hrTypes = new Set([
+        "tachycardia",
+        "bradycardia",
+        "sustained_tachycardia_immobile",
+        "sustained_bradycardia_immobile",
+        "critical_hr_immobile",
+      ]);
+      const colors = {critical: "#ff5252", high: "#ff9800", medium: "#ffd54f"};
+      const hrAlerts = alerts.filter((a) => hrTypes.has(a.event_type));
+      hrAlerts.slice(0, 20).forEach((item) => {
+        const sev = (item.severity || "").toLowerCase();
+        const tr = document.createElement("tr");
+        tr.innerHTML = `
+          <td>${timeText(item.timestamp)}</td>
+          <td>${item.event_type || "--"}</td>
+          <td>${formatNumber(item.heart_rate_bpm)}</td>
+          <td>${item.activity_state || "--"}</td>
+          <td style="color:${colors[sev] || "#9aa6b2"};font-weight:600">${item.severity || "--"}</td>
+          <td>${item.message || item.label || "--"}</td>
+        `;
+        tbody.appendChild(tr);
+      });
+      if (!hrAlerts.length) {
+        const tr = document.createElement("tr");
+        tr.innerHTML = `<td colspan="6">Khong co canh bao nhip tim bat thuong</td>`;
+        tbody.appendChild(tr);
+        summary.textContent = "Binh thuong - chua co nhip cao/thap bat thuong";
+      } else {
+        summary.textContent = `${hrAlerts.length} canh bao nhip tim (realtime)`;
+      }
+    }
     function renderEvents(eventsPayload) {
       const tbody = document.getElementById("events");
       tbody.innerHTML = "";
@@ -2271,36 +2387,40 @@ if FastAPI is not None:
     }
     async function refresh() {
       try {
-        const res = await fetch("/latest-result");
+        const res = await apiFetch("/latest-result");
         const data = await res.json();
         renderLatest(data);
         renderHistory(data.history || []);
-        const ecgRes = await fetch("/latest-ecg?max_samples=1000");
+        const ecgRes = await apiFetch("/latest-ecg?max_samples=1000");
         const ecgData = await ecgRes.json();
         renderWaveform(ecgData.samples || []);
         const patientId = data.latest_result?.patient_id || "";
         const params = new URLSearchParams({days: "1"});
         if (patientId) params.set("patient_id", patientId);
-        const summaryRes = await fetch(`/session-summary?${params.toString()}`);
+        const summaryRes = await apiFetch(`/session-summary?${params.toString()}`);
         renderSessionSummary(await summaryRes.json());
         const assessmentParams = new URLSearchParams({hours: "24"});
         if (patientId) assessmentParams.set("patient_id", patientId);
-        const assessmentRes = await fetch(`/daily-health-assessment?${assessmentParams.toString()}`);
+        const assessmentRes = await apiFetch(`/daily-health-assessment?${assessmentParams.toString()}`);
         renderDailyHealthAssessment(await assessmentRes.json());
         const reportParams = new URLSearchParams({daily_hours: "24", long_term_days: "7"});
         if (patientId) reportParams.set("patient_id", patientId);
-        const reportRes = await fetch(`/health-report?${reportParams.toString()}`);
+        const reportRes = await apiFetch(`/health-report?${reportParams.toString()}`);
         renderHealthReport(await reportRes.json());
         const eventParams = new URLSearchParams(params);
         eventParams.set("limit", "20");
-        const eventsRes = await fetch(`/events?${eventParams.toString()}`);
+        const eventsRes = await apiFetch(`/events?${eventParams.toString()}`);
         renderEvents(await eventsRes.json());
+        const alertParams = new URLSearchParams({limit: "30"});
+        if (patientId) alertParams.set("patient_id", patientId);
+        const hrAlertsRes = await apiFetch(`/alerts/realtime?${alertParams.toString()}`);
+        renderRealtimeAlerts(await hrAlertsRes.json());
       } catch (error) {
         document.getElementById("updated").textContent = `Dashboard error: ${error}`;
       }
     }
     async function startPolar() {
-      await fetch("/polar/start", {
+      await apiFetch("/polar/start", {
         method: "POST",
         headers: {"Content-Type": "application/json"},
         body: JSON.stringify({chunk_seconds: 10})
@@ -2308,11 +2428,11 @@ if FastAPI is not None:
       refresh();
     }
     async function stopPolar() {
-      await fetch("/polar/stop", {method: "POST"});
+      await apiFetch("/polar/stop", {method: "POST"});
       refresh();
     }
     async function markBaseline() {
-      const res = await fetch("/baseline/mark-current-session", {
+      const res = await apiFetch("/baseline/mark-current-session", {
         method: "POST",
         headers: {"Content-Type": "application/json"},
         body: JSON.stringify({patient_id: "polar_h10"})
@@ -2323,7 +2443,7 @@ if FastAPI is not None:
     }
     async function updateProgressiveBaseline() {
       const patientId = document.getElementById("patient").textContent || "polar_h10";
-      const res = await fetch("/personal-baseline/update-progressive", {
+      const res = await apiFetch("/personal-baseline/update-progressive", {
         method: "POST",
         headers: {"Content-Type": "application/json"},
         body: JSON.stringify({
@@ -2337,6 +2457,7 @@ if FastAPI is not None:
       alert(data.status ? `7-day personal baseline: ${data.status}` : JSON.stringify(data));
       refresh();
     }
+    initDashboardApiKey();
     refresh();
     setInterval(refresh, 2000);
   </script>
@@ -2617,6 +2738,58 @@ if FastAPI is not None:
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc))
 
+    @app.get("/pathology-report")
+    def pathology_report(patient_id: str | None = None, days: float = 7):
+        try:
+            if days <= 0:
+                raise ValueError("days must be positive.")
+            payload = compute_longterm_pathology_assessment(patient_id=patient_id, days=days)
+            save_assessment_snapshot(
+                "longterm_pathology_assessment",
+                payload,
+                patient_id=payload.get("patient_id") or patient_id,
+                period={"days": days},
+            )
+            return payload
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+
+    @app.get("/period-comparison")
+    def period_comparison(patient_id: str | None = None, window_days: int = 7):
+        try:
+            if window_days <= 0:
+                raise ValueError("window_days must be positive.")
+            payload = compute_period_comparison(patient_id=patient_id, window_days=window_days)
+            save_assessment_snapshot(
+                "period_comparison",
+                payload,
+                patient_id=payload.get("patient_id") or patient_id,
+                period={"window_days": window_days},
+            )
+            return payload
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+
+    @app.get("/daily-report/available-days")
+    def daily_report_available_days(patient_id: str = "polar_h10"):
+        """List calendar days (from the cloud archive) that have data."""
+        try:
+            return list_available_report_days(patient_id=patient_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+
+    @app.get("/daily-report")
+    def daily_report(date: str, patient_id: str = "polar_h10"):
+        """Full per-calendar-day statistical report sourced from MongoDB.
+
+        ``date`` is YYYY-MM-DD. Returns HR/rhythm/ectopy/stress/event
+        breakdowns plus a per-minute HR series for charting in the app.
+        """
+        try:
+            return compute_daily_report(patient_id=patient_id, date=date)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+
     @app.get("/events")
     def events(patient_id: str | None = None, days: float = 1, limit: int = 200):
         return build_event_timeline(patient_id=patient_id, days=days, limit=limit)
@@ -2629,6 +2802,18 @@ if FastAPI is not None:
             days=float(payload.get("days") or 30),
             limit=int(payload.get("limit") or 50000),
         )
+
+    @app.post("/storage/rollups/rebuild")
+    def rebuild_rollups(payload: dict | None = None):
+        payload = payload or {}
+        return rebuild_daily_rollups(
+            patient_id=payload.get("patient_id"),
+            days=int(payload.get("days") or 90),
+        )
+
+    @app.get("/storage/rollups")
+    def storage_rollups(patient_id: str | None = None, days: int = 30):
+        return {"rollups": get_daily_rollups(patient_id=patient_id, days=days)}
 
     @app.post("/sync/mongodb")
     def sync_mongodb(payload: dict | None = None):

@@ -17,7 +17,9 @@ from src.storage.ecg_storage import (
     get_collection_sessions,
     get_history,
     get_raw_chunks,
+    get_unsynced_daily_rollups,
     mark_assessment_snapshots_synced,
+    mark_daily_rollups_synced,
     mark_collection_segments_synced,
     mark_collection_sessions_synced,
     mark_raw_chunks_synced,
@@ -159,6 +161,8 @@ def ensure_indexes(db):
     db.collection_segments.create_index([("collection_segment_id", ASCENDING)], unique=True)
     db.assessment_snapshots.create_index([("snapshot_id", ASCENDING)], unique=True)
     db.personal_baselines.create_index([("patient_id", ASCENDING)], unique=True)
+    db.daily_rollups.create_index([("rollup_id", ASCENDING)], unique=True)
+    db.daily_rollups.create_index([("patient_id", ASCENDING), ("day", ASCENDING)])
     db.sync_runs.create_index([("synced_at", ASCENDING)])
     with _CLIENT_LOCK:
         _INDEXES_ENSURED.add(cache_key)
@@ -382,6 +386,18 @@ def sync_to_mongodb(
     )
     mark_assessment_snapshots_synced(assessment_snapshot_ids)
 
+    # --- daily rollups (pre-aggregated per-day metrics) ---
+    daily_rollups = get_unsynced_daily_rollups(patient_id=patient_id, limit=limit)
+    daily_rollup_docs = []
+    for item in daily_rollups:
+        doc = _json_safe({k: v for k, v in item.items() if k != "metrics_json"})
+        doc["synced_at"] = utc_now_iso()
+        daily_rollup_docs.append(doc)
+    daily_rollup_upserts, daily_rollup_ids = _bulk_upsert(
+        db.daily_rollups, "rollup_id", daily_rollup_docs
+    )
+    mark_daily_rollups_synced([d["rollup_id"] for d in daily_rollup_docs])
+
     # --- personal baseline (single doc per patient) ---
     personal_baseline_upserted = False
     if patient_id:
@@ -409,6 +425,7 @@ def sync_to_mongodb(
         "collection_session_count": len(collection_sessions),
         "collection_segment_count": len(collection_segments),
         "assessment_snapshot_count": len(assessment_snapshots),
+        "daily_rollup_count": len(daily_rollups),
         "include_raw_samples": bool(include_raw_samples),
         "synced_at": utc_now_iso(),
     }
@@ -433,6 +450,8 @@ def sync_to_mongodb(
         "collection_session_upserts": collection_session_upserts,
         "collection_segment_upserts": collection_segment_upserts,
         "assessment_snapshot_upserts": assessment_snapshot_upserts,
+        "daily_rollup_count": len(daily_rollups),
+        "daily_rollup_upserts": daily_rollup_upserts,
         "personal_baseline_upserted": personal_baseline_upserted,
         "raw_storage": "blob_chunks" if raw_chunks else "no_unsynced_chunks",
     }

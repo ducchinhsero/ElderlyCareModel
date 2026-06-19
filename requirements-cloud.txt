@@ -1,0 +1,6 @@
+# Slim dependency set for the read-only cloud reader (src/api/cloud_reader.py).
+# It only reads MongoDB Atlas — no sklearn / bleak / numpy needed, so a free
+# PaaS dyno installs in seconds.
+fastapi>=0.110
+uvicorn[standard]>=0.27
+pymongo[srv]>=4.6

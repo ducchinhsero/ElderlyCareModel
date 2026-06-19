@@ -10,7 +10,11 @@ from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 from src.config.env_loader import load_env_file
-from src.storage.ecg_storage import purge_synced_raw_chunks, storage_status
+from src.storage.ecg_storage import (
+    purge_synced_raw_chunks,
+    run_rollup_maintenance,
+    storage_status,
+)
 from src.storage.mongodb_sync import is_mongodb_configured, sync_to_mongodb
 
 
@@ -177,6 +181,7 @@ def run_background_sync_once(
     purge_func=purge_synced_raw_chunks,
     configured_func=is_mongodb_configured,
     storage_status_func=storage_status,
+    maintenance_func=run_rollup_maintenance,
 ):
     config = (config or BackgroundSyncConfig.from_env()).validate()
     logger = get_background_sync_logger(config.log_path)
@@ -188,6 +193,14 @@ def run_background_sync_once(
         "days": config.days,
         "limit": config.limit,
     }
+
+    # Finalise recent daily rollups first so they persist locally and are
+    # picked up by the sync below — even if no report endpoint was hit.
+    try:
+        result["rollup_maintenance"] = maintenance_func(patient_id=config.patient_id)
+    except Exception as exc:  # noqa: BLE001 — never let maintenance break the cycle
+        result["rollup_maintenance"] = {"error": str(exc)}
+        logger.warning("Rollup maintenance error (non-fatal): %s", exc)
 
     if not configured_func():
         result.update(

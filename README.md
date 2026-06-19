@@ -95,6 +95,146 @@ sudo systemctl status elderly-care --no-pager
 sudo systemctl status elderly-care-wifi-provisioner --no-pager
 ```
 
+## Quy trình lắp tại nhà để thu thập dữ liệu
+
+Phần này dành cho người triển khai khi mang Raspberry Pi đến nhà người dùng. Mục tiêu là sau khi cắm nguồn, Pi tự vào mạng, tự kết nối Polar H10, tự lưu dữ liệu local và app đọc được dữ liệu/cảnh báo.
+
+### 1. Chuẩn bị trước khi đến nhà
+
+- Raspberry Pi đã cài bằng `scripts/install_pi_production.sh`.
+- Polar H10 đã có pin, dây đeo sạch và điện cực được làm ẩm khi đeo.
+- Biết MAC Polar H10, ví dụ `24:AC:AC:13:EB:86`.
+- Có sẵn API key nếu `.env` bật `API_AUTH_ENABLED=1`.
+- Có laptop/điện thoại cài Flutter app hoặc bản build app cho người giám sát.
+- Nếu nhà dùng Wi-Fi mới, chuẩn bị SSID/password Wi-Fi nhà và password AP setup của Pi.
+
+Kiểm tra `.env` trên Pi trước khi bàn giao:
+
+```bash
+cd /home/elcaprj/elderly_care
+grep -E '^(API_AUTH_ENABLED|API_KEY|POLAR_H10_MAC|POLAR_AUTO_START|POLAR_AUTO_START_CHUNK_SECONDS|MONGODB_SYNC_ENABLED|WIFI_AP_PASSWORD)=' .env
+```
+
+Giá trị tối thiểu nên có:
+
+```env
+POLAR_H10_MAC=24:AC:AC:13:EB:86
+POLAR_AUTO_START=1
+POLAR_AUTO_START_CHUNK_SECONDS=10
+API_AUTH_ENABLED=1
+API_KEY=<chuoi-bi-mat-dai>
+```
+
+Với demo LAN nội bộ có thể dùng `API_AUTH_ENABLED=0`, nhưng khi đi qua VPN/cloud/public network phải bật auth.
+
+### 2. Lắp thiết bị tại nhà
+
+1. Đặt Raspberry Pi gần khu vực người dùng sinh hoạt, tránh hộp kim loại/tường dày làm yếu Bluetooth.
+2. Cắm nguồn Pi và chờ 1-2 phút.
+3. Đeo Polar H10 đúng vị trí quanh ngực, làm ẩm điện cực, kiểm tra dây đeo ôm sát.
+4. Nếu Pi đã biết Wi-Fi nhà, nó sẽ tự vào mạng. Nếu chưa, dùng app màn **Thiết lập Wi-Fi Raspberry** hoặc kết nối AP `ElderlyCare-Setup-XXXX` rồi gửi cấu hình Wi-Fi.
+5. Không cần mở `/dashboard` để bật Polar nếu `POLAR_AUTO_START=1`; service sẽ tự start collector sau khi backend chạy.
+
+### 3. Tìm địa chỉ Pi và kiểm tra backend
+
+Trên chính Raspberry Pi:
+
+```bash
+hostname -I
+curl -s http://127.0.0.1:8000/health | python3 -m json.tool
+```
+
+Từ laptop/điện thoại cùng mạng:
+
+```bash
+curl -s http://elderlycare.local:8000/health
+curl -s http://<IP_RASPBERRY>:8000/health
+```
+
+Nếu auth bật:
+
+```bash
+curl -s -H "X-API-Key: <API_KEY>" http://<IP_RASPBERRY>:8000/health | python3 -m json.tool
+```
+
+Không dùng `0.0.0.0` để truy cập từ app/browser. `0.0.0.0` chỉ là địa chỉ backend bind server. App phải dùng `elderlycare.local` hoặc IP thật của Pi.
+
+### 4. Xác nhận Polar đang tự thu tín hiệu
+
+Kiểm tra service:
+
+```bash
+sudo systemctl status elderly-care --no-pager
+journalctl -u elderly-care -f
+```
+
+Kiểm tra `/health` có các dấu hiệu sau:
+
+- `polar.running = true`
+- `polar.auto_start = true`
+- `polar.last_packet_at` gần thời điểm hiện tại
+- `polar.last_prediction_at` gần thời điểm hiện tại
+- `polar.successful_connections >= 1`
+
+Nếu `last_error` còn dòng cũ như `BleakDeviceNotFoundError` nhưng `last_packet_at` vẫn mới, ưu tiên tin `last_packet_at`: dữ liệu vẫn đang được thu. Nếu `last_packet_at` không đổi trong hơn 60 giây, kiểm tra pin Polar, dây đeo, khoảng cách Bluetooth và MAC trong `.env`.
+
+### 5. Xác nhận dữ liệu đã được lưu
+
+```bash
+curl -s -H "X-API-Key: <API_KEY>" http://127.0.0.1:8000/storage/status | python3 -m json.tool
+```
+
+Cần thấy các bộ đếm tăng theo thời gian:
+
+- `predictions`
+- `events`
+- `raw_signal_chunks` gồm cả `ecg` và `acc`
+
+Kiểm tra nhanh dữ liệu mới nhất:
+
+```bash
+curl -s -H "X-API-Key: <API_KEY>" http://127.0.0.1:8000/latest-result | python3 -m json.tool
+curl -s -H "X-API-Key: <API_KEY>" 'http://127.0.0.1:8000/events?limit=10' | python3 -m json.tool
+```
+
+### 6. Cấu hình app tại nhà
+
+Trong Flutter app:
+
+1. Chọn vai trò **Người đeo** nếu app chạy trong nhà/cùng mạng Pi.
+2. Nhập gateway là `elderlycare.local` hoặc IP Pi, ví dụ `10.10.56.149`.
+3. Nhập API key nếu backend bật auth.
+4. Bấm **Kiểm tra /health** trong Settings.
+5. Vào Dashboard và chờ dữ liệu nhịp tim cập nhật.
+6. Vào Alert Center để kiểm tra `/alerts/realtime` và `/events`.
+
+Với **Người giám sát ở xa** (khác mạng Wi-Fi), không trỏ app vào IP LAN của Pi (`elderlycare.local`/`192.168.x.x` chỉ reach trong cùng mạng). Phương án production khuyến nghị là **Tailscale** (VPN mesh, chạy sau NAT/CGNAT, không cần port-forward, mã hoá E2E): cài trên Pi bằng `scripts/setup_tailscale_pi.sh`, rồi trong app role Người giám sát nhập địa chỉ Tailscale của Pi (`http://<ten>.<tailnet>.ts.net:8000` hoặc `http://100.x.y.z:8000`) + API key. Chi tiết: `docs/remote-access-tailscale.md`. Luồng realtime ưu tiên `/ws/alerts`, `/ws/vitals`; HTTP polling là fallback.
+
+### 7. Cảnh báo trong vận hành
+
+- Nhịp tim cao/thấp đơn lẻ chỉ là `WATCH`, không popup khẩn.
+- Popup khẩn chỉ bật khi có bằng chứng nguy hiểm hơn: té ngã, nhịp tim rất cao/thấp kéo dài khi người dùng gần như bất động, hoặc bất thường nhịp tim mức cao.
+- Alert urgent được lưu vào SQLite trước, sau đó mới broadcast qua WebSocket/webhook. Nếu app mất mạng rồi reconnect, alert chưa ack vẫn lấy lại qua `/alerts/realtime`.
+- Sau khi người giám sát kiểm tra người dùng, gọi/nhấn ACK để lưu trạng thái đã kiểm tra.
+
+### 8. Bàn giao và bảo trì
+
+- Ghi lại IP/hostname Pi, API key, password AP setup, MAC Polar và vị trí đặt Pi.
+- Khuyến nghị đặt DHCP reservation trên router để IP Pi ổn định.
+- Kiểm tra pin Polar định kỳ.
+- Không commit/chia sẻ `.env`, API key, MongoDB URI, Wi-Fi password hoặc dữ liệu ECG/ACC cá nhân.
+- Khi Pi mất điện, chỉ cần cấp nguồn lại; `elderly-care.service` và `POLAR_AUTO_START=1` sẽ tự chạy lại.
+
+Checklist hoàn tất tại nhà:
+
+- [ ] Pi vào được mạng nhà hoặc AP setup hoạt động.
+- [ ] `GET /health` trả `status=ok`.
+- [ ] `polar.running=true` và `last_packet_at` cập nhật.
+- [ ] `storage/status` có `predictions`, `events`, `raw_signal_chunks` tăng.
+- [ ] App Dashboard hiển thị nhịp tim mới.
+- [ ] Alert Center đọc được cảnh báo/timeline.
+- [ ] Người giám sát biết cách ACK cảnh báo khẩn.
+
 ## Cài thủ công cho dev
 
 ```bash

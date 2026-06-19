@@ -5,6 +5,7 @@ $out = Join-Path $src "elderly_care_deploy.zip"
 $tmp = Join-Path $env:TEMP "elderly_care_deploy_staging"
 
 $requiredArtifacts = @(
+    # Model weights (.pkl)
     "models\stress\rf_model.pkl",
     "models\stress\svm_pipeline.pkl",
     "models\stress\scaler_final.pkl",
@@ -13,7 +14,17 @@ $requiredArtifacts = @(
     "models\ectopy\ectopy_feature_model.pkl",
     "models\ectopy\ectopy_scaler.pkl",
     "models\anomaly_legacy\isolation_forest_model.pkl",
-    "models\anomaly_legacy\anomaly_scaler.pkl"
+    "models\anomaly_legacy\anomaly_scaler.pkl",
+    # Schema / label / config JSON required at runtime (predictors validate
+    # these strictly on load; missing one makes the model return "unknown").
+    "models\stress\model_metadata.json",
+    "models\stress\stress_feature_schema.json",
+    "models\rhythm\rhythm_feature_schema.json",
+    "models\rhythm\label_map.json",
+    "models\rhythm\rhythm_decision_config.json",
+    "models\ectopy\ectopy_feature_schema.json",
+    "models\ectopy\label_map.json",
+    "models\anomaly_legacy\anomaly_feature_schema.json"
 )
 
 foreach ($artifact in $requiredArtifacts) {

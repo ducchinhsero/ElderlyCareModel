@@ -315,6 +315,7 @@ MongoDB collections du kien:
 - `personal_baselines`
 - `session_summaries`
 - `risk_summaries`
+- `daily_rollups`
 - `sync_runs`
 
 Da test:
@@ -416,21 +417,29 @@ Da co nen tang:
 - raw ECG/ACC storage
 - MongoDB sync
 
+Da co (cap nhat 2026-06-15):
+
+- Rule layer benh ly dai han `src/assessment/longterm_pathology.py`:
+  - AF burden dai han (recurrence theo ngay + mean/max burden + trend).
+  - repeated tachy/brady events (gom ca sustained-while-immobile + critical immobile).
+  - PVC/PAC burden (secondary signal).
+  - fall/activity risk.
+  - poor signal corrected: chi tinh recurrence tren ngay du tin cay (window_count >= 10, good_signal_ratio >= 0.5); them indicator `monitoring_quality` khi coverage thap.
+- Output dang referral suggestion ("discuss with medical staff" / "see a doctor if it recurs or symptoms appear"), khong chan doan.
+- Endpoint `GET /pathology-report?patient_id=&days=7`; cung nhung trong `GET /health-report` o key `pathology`.
+- Snapshot type moi: `longterm_pathology_assessment`.
+- Test: `tests/test_longterm_pathology.py` (9 test, pass).
+
 Chua co:
 
-- model chan doan benh ly dai han duoc train/validate rieng.
+- model chan doan benh ly dai han duoc train/validate rieng (van la rule layer).
 - clinical-grade diagnosis.
 - validation tren du lieu thuc 1-7 ngay cua nhieu nguoi.
 
 Huong tiep theo:
 
-- Xay model/rule layer cho:
-  - AF burden dai han
-  - repeated tachy/brady events
-  - PVC/PAC burden
-  - poor signal corrected trend
-  - fall/activity risk
-- Output phai la “can trao doi nhan vien y te” hoac “nen di kham neu lap lai/co trieu chung”, khong chan doan chac chan.
+- Tune nguong recurrence/burden tren du lieu thuc nhieu ngay cua nhieu nguoi.
+- Khi co du du lieu co nhan, thay rule bang model duoc train/validate.
 
 ### 4.6 App cloud/caregiver flow chua hoan tat hoan toan
 
