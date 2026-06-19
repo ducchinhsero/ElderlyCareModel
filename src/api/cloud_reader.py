@@ -127,3 +127,95 @@ def daily_report(date: str, patient_id: str = "polar_h10"):
         return compute_daily_report(patient_id=patient_id, date=date)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
+
+
+# ── Mongo-backed mirrors of the Pi's read endpoints ──────────────────────────
+# These let the caregiver's Dashboard / History / Alerts tabs show the most
+# recent SYNCED data when the Pi is offline. It is "last known", not live —
+# live realtime still requires the Pi (Tailscale + WebSocket/MQTT).
+_PRED_SORT = [("timestamp_epoch", -1), ("timestamp", -1)]
+_EVENT_SORT = [("timestamp_epoch", -1), ("timestamp", -1)]
+
+
+def _db():
+    _client, db = get_mongo_database()
+    return db
+
+
+@app.get("/latest-result")
+def latest_result(patient_id: str = "polar_h10"):
+    """Most recent synced prediction (shaped like the Pi's /latest-result)."""
+    db = _db()
+    docs = list(
+        db.predictions.find({"patient_id": patient_id}, {"_id": 0})
+        .sort(_PRED_SORT)
+        .limit(30)
+    )
+    return {
+        "latest_result": docs[0] if docs else None,
+        "history": list(reversed(docs)),  # chronological for the mini chart
+        "polar": {"connected": False, "auto_start": False, "source": "cloud"},
+        "source": "cloud_archive",
+    }
+
+
+@app.get("/history")
+def history(patient_id: str = "polar_h10", days: float = 1, limit: int = 300):
+    """Most recent synced predictions, oldest→newest (for the History tab)."""
+    db = _db()
+    docs = list(
+        db.predictions.find({"patient_id": patient_id}, {"_id": 0})
+        .sort(_PRED_SORT)
+        .limit(max(1, int(limit)))
+    )
+    docs.reverse()
+    return {"items": docs, "source": "cloud_archive"}
+
+
+@app.get("/events")
+def events(patient_id: str = "polar_h10", days: float = 1, limit: int = 200):
+    """Most recent synced events (for the Alerts/history timeline)."""
+    db = _db()
+    docs = list(
+        db.events.find({"patient_id": patient_id}, {"_id": 0})
+        .sort(_EVENT_SORT)
+        .limit(max(1, int(limit)))
+    )
+    docs.reverse()
+    return {"events": docs, "count": len(docs), "source": "cloud_archive"}
+
+
+@app.get("/alerts/realtime")
+def alerts_realtime(
+    patient_id: str = "polar_h10",
+    limit: int = 50,
+    include_acknowledged: bool = False,
+):
+    """Most recent high/critical events as caregiver alerts."""
+    db = _db()
+    docs = list(
+        db.events.find(
+            {"patient_id": patient_id, "severity": {"$in": ["high", "critical"]}},
+            {"_id": 0},
+        )
+        .sort(_EVENT_SORT)
+        .limit(max(1, int(limit)))
+    )
+    return {"alerts": docs, "alert_count": len(docs), "source": "cloud_archive"}
+
+
+@app.get("/health-report")
+def health_report(
+    patient_id: str = "polar_h10",
+    daily_hours: float = 24,
+    long_term_days: float = 7,
+):
+    """The temporal health report needs the Pi's SQLite compute path, which
+    isn't available in the cloud. Return a minimal, parse-safe payload so the
+    Report tab's overview degrades gracefully instead of erroring. Use the
+    per-day report (/daily-report) for cloud-sourced analysis."""
+    return {
+        "patient_id": patient_id,
+        "overall": {"level": "unknown", "summary": ""},
+        "disclaimer": "Tóm tắt nhiều lớp cần Pi; dùng Báo cáo theo ngày để xem dữ liệu cloud.",
+    }
