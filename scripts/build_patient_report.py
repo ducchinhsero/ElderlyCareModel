@@ -1,14 +1,19 @@
 """Build a self-contained HTML clinical report from the exported JSON dataset.
 
-Reads dataset/_embed.json (compact, produced by the analysis step) and writes
-docs/bao-cao-suc-khoe-18062026.html with inline SVG charts (no external libs,
-works offline). Re-run after refreshing the JSON to regenerate the report.
+Reads dataset/report_18062026.json (compact, produced by the analysis step) and
+writes docs/bao-cao-suc-khoe-18062026.html with inline SVG charts (no external
+libs, works offline). Re-run after refreshing the JSON to regenerate the report.
+
+Optional override: pass a JSON path as the first CLI argument to use a different
+exported dataset, e.g. `python scripts/build_patient_report.py dataset/report_19062026.json`.
 """
 import json
+import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-DATA = json.loads((ROOT / "dataset" / "_embed.json").read_text(encoding="utf-8"))
+DATA_PATH = Path(sys.argv[1]) if len(sys.argv) > 1 else ROOT / "dataset" / "report_18062026.json"
+DATA = json.loads(DATA_PATH.read_text(encoding="utf-8"))
 OUT = ROOT / "docs" / "bao-cao-suc-khoe-18062026.html"
 
 HTML = r"""<!DOCTYPE html>
