@@ -27,6 +27,7 @@ from fastapi.responses import JSONResponse
 from src.config.env_loader import load_env_file
 from src.assessment.daily_report import (
     compute_daily_report,
+    compute_period_report,
     list_available_report_days,
 )
 from src.storage.mongodb_sync import get_mongo_database, is_mongodb_configured
@@ -125,6 +126,14 @@ def daily_report_available_days(patient_id: str = "polar_h10"):
 def daily_report(date: str, patient_id: str = "polar_h10"):
     try:
         return compute_daily_report(patient_id=patient_id, date=date)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.get("/period-report")
+def period_report(period: str = "week", patient_id: str = "polar_h10", end: str | None = None):
+    try:
+        return compute_period_report(patient_id=patient_id, end_date=end, period=period)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 

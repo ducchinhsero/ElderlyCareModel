@@ -13,7 +13,11 @@ import pandas as pd
 import sklearn
 
 from src.assessment.daily_health_assessment import compute_daily_health_assessment
-from src.assessment.daily_report import compute_daily_report, list_available_report_days
+from src.assessment.daily_report import (
+    compute_daily_report,
+    compute_period_report,
+    list_available_report_days,
+)
 from src.assessment.longterm_pathology import compute_longterm_pathology_assessment
 from src.assessment.temporal_health_report import compute_temporal_health_report
 from src.config.runtime_config import load_sensor_context_config, sensor_context_config_path
@@ -2787,6 +2791,24 @@ if FastAPI is not None:
         """
         try:
             return compute_daily_report(patient_id=patient_id, date=date)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+
+    @app.get("/period-report")
+    def period_report(
+        period: str = "week",
+        patient_id: str = "polar_h10",
+        end: str | None = None,
+    ):
+        """Weekly/monthly statistical report sourced from MongoDB.
+
+        ``period`` is ``week`` (7 days) or ``month`` (30 days), ending on ``end``
+        (YYYY-MM-DD, inclusive; default newest day with data). Returns per-day HR
+        trend, band/rhythm/ectopy/stress breakdowns, event totals and an overall
+        rate-based risk assessment.
+        """
+        try:
+            return compute_period_report(patient_id=patient_id, end_date=end, period=period)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc))
 

@@ -4,6 +4,10 @@ from src.assessment.daily_health_assessment import (
     compute_daily_health_assessment,
 )
 from src.assessment.longterm_pathology import compute_longterm_pathology_assessment
+from src.assessment.longterm_thresholds import (
+    LONG_TERM_MIN_WINDOWS,
+    evaluate_long_term_findings,
+)
 from src.calibration.personal_baseline import compare_history_to_baseline, load_personal_baseline
 from src.storage.ecg_storage import (
     build_event_timeline,
@@ -216,10 +220,6 @@ def _realtime_layer(latest, minutes=DEFAULT_REALTIME_MINUTES):
     }
 
 
-def _event_count(events, event_type):
-    return sum(1 for event in events if event.get("event_type") == event_type)
-
-
 def _long_term_layer(patient_id=None, days=DEFAULT_LONG_TERM_DAYS, db_path=None):
     summary_kwargs = {"patient_id": patient_id, "days": days}
     events_kwargs = {"patient_id": patient_id, "days": days, "limit": 10000}
@@ -232,115 +232,12 @@ def _long_term_layer(patient_id=None, days=DEFAULT_LONG_TERM_DAYS, db_path=None)
     window_count = int(daily_summary.get("window_count") or 0)
     day_count = int(daily_summary.get("day_count") or 0)
     overall = daily_summary.get("overall") or {}
-    if window_count < 20:
+    if window_count < LONG_TERM_MIN_WINDOWS:
         level = "unknown"
         summary = "Not enough multi-day data for a long-term assessment."
         findings = []
     else:
-        findings = []
-        af_count = _event_count(events, "af_suspicion")
-        ectopy_count = _event_count(events, "ectopy_suspicion")
-        tachy_count = _event_count(events, "tachycardia")
-        brady_count = _event_count(events, "bradycardia")
-        fall_count = _event_count(events, "fall_candidate")
-        poor_signal_count = _event_count(events, "poor_signal")
-        max_af_burden = _safe_float(overall.get("max_af_burden_percent"))
-        max_afib_probability = _safe_float(overall.get("max_afib_probability"))
-        af_ratio = _safe_float(overall.get("af_suspicion_window_ratio"))
-        good_signal_ratio = _safe_float(overall.get("good_signal_ratio"))
-
-        if af_count >= 10 or af_ratio >= 0.10 or max_af_burden >= 10.0:
-            af_level = "high"
-        elif af_count >= 3 or af_ratio >= 0.03 or max_afib_probability >= 0.28:
-            af_level = "medium"
-        else:
-            af_level = None
-        if af_level:
-            findings.append(
-                _finding(
-                    "long_term_afib_suspicion",
-                    af_level,
-                    "Repeated AFib-like pattern",
-                    "AFib-like rhythm patterns appear repeatedly across the selected days.",
-                    {
-                        "event_count": af_count,
-                        "af_suspicion_window_ratio": round(af_ratio, 4),
-                        "max_afib_probability": round(max_afib_probability, 4),
-                        "max_af_burden_percent": round(max_af_burden, 2),
-                    },
-                )
-            )
-
-        if ectopy_count >= 5:
-            ectopy_level = "medium"
-        else:
-            ectopy_level = None
-        if ectopy_level:
-            findings.append(
-                _finding(
-                    "long_term_ectopy_activity",
-                    ectopy_level,
-                    "Repeated PVC/PAC-like activity (experimental)",
-                    "PVC/PAC-like events recur across the selected days and should be interpreted as a secondary signal.",
-                    {"event_count": ectopy_count, "assessment_role": "secondary_signal"},
-                )
-            )
-
-        hr_event_count = tachy_count + brady_count
-        if hr_event_count >= 10:
-            hr_level = "high"
-        elif hr_event_count >= 3:
-            hr_level = "medium"
-        else:
-            hr_level = None
-        if hr_level:
-            findings.append(
-                _finding(
-                    "long_term_heart_rate_abnormality",
-                    hr_level,
-                    "Repeated heart-rate abnormality",
-                    "Tachycardia or bradycardia events recur across the selected days.",
-                    {
-                        "event_count": hr_event_count,
-                        "tachycardia_event_count": tachy_count,
-                        "bradycardia_event_count": brady_count,
-                    },
-                )
-            )
-
-        if fall_count:
-            findings.append(
-                _finding(
-                    "long_term_fall_risk",
-                    "high",
-                    "Fall candidate in selected period",
-                    "At least one fall candidate exists in the selected days.",
-                    {"event_count": fall_count},
-                )
-            )
-
-        if good_signal_ratio and good_signal_ratio < 0.5:
-            findings.append(
-                _finding(
-                    "long_term_poor_signal",
-                    "high",
-                    "Poor long-term signal quality",
-                    "Signal quality is too low for reliable long-term interpretation.",
-                    {
-                        "good_signal_ratio": round(good_signal_ratio, 4),
-                        "poor_signal_event_count": poor_signal_count,
-                    },
-                )
-            )
-
-        level = _level_max(*(finding["level"] for finding in findings)) if findings else "low"
-        summary = (
-            "No significant multi-day risk pattern detected."
-            if not findings
-            else "Multi-day risk/suspicion pattern detected: "
-            + ", ".join(finding["title"] for finding in findings[:3])
-            + "."
-        )
+        level, summary, findings = evaluate_long_term_findings(overall, events, day_count)
 
     return {
         "layer": "long_term",

@@ -7,6 +7,7 @@ from src.assessment.temporal_health_report import (
     build_temporal_health_report,
     compute_temporal_health_report,
 )
+from src.assessment.longterm_thresholds import evaluate_long_term_findings
 from src.storage.ecg_storage import save_prediction
 
 
@@ -79,6 +80,42 @@ class TemporalHealthReportTest(unittest.TestCase):
             self.assertEqual(report["patient_id"], "target")
             self.assertEqual(report["layers"]["realtime"]["evidence"]["patient_id"], "target")
             self.assertEqual(report["layers"]["daily"]["data_quality"]["prediction_count"], 3)
+
+
+class LongTermThresholdTest(unittest.TestCase):
+    """Rate-based gating must stay consistent across window lengths."""
+
+    @staticmethod
+    def _af_events(n):
+        return [{"event_type": "af_suspicion"} for _ in range(n)]
+
+    def test_same_event_rate_gives_same_level_week_vs_month(self):
+        # ~1.6 AF events/day is "high" whether observed over 7 or 30 days.
+        week_level, _, _ = evaluate_long_term_findings({}, self._af_events(11), day_count=7)
+        month_level, _, _ = evaluate_long_term_findings({}, self._af_events(48), day_count=30)
+        self.assertEqual(week_level, "high")
+        self.assertEqual(month_level, "high")
+
+    def test_absolute_count_does_not_over_trigger_over_a_month(self):
+        # 20 AF events over 30 days (~0.67/day) is medium, NOT high. The old
+        # absolute "count >= 10 -> high" rule ignored window length and would
+        # have over-escalated this to high.
+        level, _, findings = evaluate_long_term_findings({}, self._af_events(20), day_count=30)
+        self.assertNotEqual(level, "high")
+        af = next(f for f in findings if f["type"] == "long_term_afib_suspicion")
+        self.assertEqual(af["level"], "medium")
+
+    def test_clean_history_is_low(self):
+        level, _, findings = evaluate_long_term_findings({}, [], day_count=7)
+        self.assertEqual(level, "low")
+        self.assertEqual(findings, [])
+
+    def test_burden_ratio_still_triggers_regardless_of_count(self):
+        # A short intense burst (high burden / window ratio) still escalates even
+        # with few discrete events.
+        overall = {"max_af_burden_percent": 12.0, "af_suspicion_window_ratio": 0.15}
+        level, _, _ = evaluate_long_term_findings(overall, [], day_count=7)
+        self.assertEqual(level, "high")
 
 
 if __name__ == "__main__":

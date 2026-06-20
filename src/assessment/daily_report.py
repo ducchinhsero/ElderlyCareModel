@@ -13,6 +13,10 @@ patient's local day), which is exactly how the collector tags each window.
 """
 from datetime import datetime, timedelta
 
+from src.assessment.longterm_thresholds import (
+    SEVERITY_SCORE,
+    evaluate_long_term_findings,
+)
 from src.storage.mongodb_sync import get_mongo_database, is_mongodb_configured
 
 # Signal-quality labels we trust for clinical statistics. "poor" windows still
@@ -74,6 +78,251 @@ def list_available_report_days(patient_id="polar_h10", limit=120):
             for sid in session_ids
         ],
     }
+
+
+PERIOD_DAYS = {"week": 7, "month": 30}
+
+# Real event types carry more specific names than the canonical
+# tachy/brady the shared long-term evaluator counts. Map them so the
+# heart-rate finding fires on production data too.
+_EVAL_TYPE_ALIASES = {
+    "sustained_tachycardia_immobile": "tachycardia",
+    "sustained_bradycardia_immobile": "bradycardia",
+    "critical_hr_immobile": "tachycardia",
+}
+
+
+def compute_period_report(patient_id="polar_h10", end_date=None, period="week"):
+    """Build a weekly/monthly statistical report from MongoDB.
+
+    Aggregates the selected window (``period`` = ``"week"`` -> 7 days or
+    ``"month"`` -> 30 days, ending on ``end_date`` inclusive; default newest day
+    with data) into per-day HR trend, band/rhythm/ectopy/stress distributions,
+    event totals and an overall risk level. The level reuses the *same*
+    rate-based long-term evaluator the edge backend uses
+    (``longterm_thresholds.evaluate_long_term_findings``), so weekly and monthly
+    windows are scored consistently.
+    """
+    if not is_mongodb_configured():
+        raise ValueError("MongoDB is not configured; cannot build period report.")
+    days = PERIOD_DAYS.get(period)
+    if days is None:
+        raise ValueError("period must be 'week' or 'month'.")
+    _client, db = get_mongo_database()
+    pid_query = {"patient_id": patient_id} if patient_id else {}
+
+    if end_date:
+        end_sid = _date_to_session_id(end_date)
+    else:
+        session_ids = [s for s in db.predictions.distinct("session_id", pid_query) if s]
+        if not session_ids:
+            return {
+                "patient_id": patient_id,
+                "period": period,
+                "days": days,
+                "has_data": False,
+            }
+        end_sid = max(session_ids)
+
+    end_dt = datetime.strptime(end_sid, "%Y%m%d")
+    start_dt = end_dt - timedelta(days=days - 1)
+    start_sid = start_dt.strftime("%Y%m%d")
+    match = {"session_id": {"$gte": start_sid, "$lte": end_sid}}
+    if patient_id:
+        match["patient_id"] = patient_id
+
+    out = {
+        "patient_id": patient_id,
+        "period": period,
+        "days": days,
+        "date_start": _session_id_to_iso(start_sid),
+        "date_end": _session_id_to_iso(end_sid),
+    }
+
+    pred = _first(list(db.predictions.aggregate([
+        {"$match": match},
+        {"$facet": {
+            "total": [{"$count": "n"}],
+            "reliable": [{"$match": _RELIABLE_MATCH}, {"$count": "n"}],
+            "signal_quality": [{"$group": {"_id": "$signal_quality.label", "n": {"$sum": 1}}}],
+            "hr_stats": [
+                {"$match": {**_RELIABLE_MATCH, **_HR_OK}},
+                {"$group": {"_id": None, "n": {"$sum": 1},
+                            "mean": {"$avg": "$heart_rate_bpm"},
+                            "min": {"$min": "$heart_rate_bpm"},
+                            "max": {"$max": "$heart_rate_bpm"},
+                            "std": {"$stdDevPop": "$heart_rate_bpm"}}},
+            ],
+            "bands": [
+                {"$match": {**_RELIABLE_MATCH, **_HR_OK}},
+                {"$bucket": {"groupBy": "$heart_rate_bpm",
+                             "boundaries": _BAND_BOUNDS, "default": "other",
+                             "output": {"n": {"$sum": 1}}}},
+            ],
+            "per_day": [
+                {"$match": {**_RELIABLE_MATCH, **_HR_OK}},
+                {"$group": {"_id": "$session_id", "n": {"$sum": 1},
+                            "mean": {"$avg": "$heart_rate_bpm"},
+                            "min": {"$min": "$heart_rate_bpm"},
+                            "max": {"$max": "$heart_rate_bpm"},
+                            "over100": {"$sum": {"$cond": [
+                                {"$gt": ["$heart_rate_bpm", 100]}, 1, 0]}},
+                            "over120": {"$sum": {"$cond": [
+                                {"$gte": ["$heart_rate_bpm", 120]}, 1, 0]}}}},
+                {"$sort": {"_id": 1}},
+            ],
+            "rhythm": [{"$match": _RELIABLE_MATCH},
+                       {"$group": {"_id": "$rhythm.label", "n": {"$sum": 1}}}],
+            "ectopy": [{"$match": _RELIABLE_MATCH},
+                       {"$group": {"_id": "$ectopy.label", "n": {"$sum": 1}}}],
+            "afib": [
+                {"$match": _RELIABLE_MATCH},
+                {"$group": {"_id": None,
+                            "mean": {"$avg": "$rhythm.possible_afib_probability"},
+                            "max": {"$max": "$rhythm.possible_afib_probability"}}},
+            ],
+            "afib_windows": [
+                {"$match": {**_RELIABLE_MATCH, "rhythm.label": "possible_afib"}},
+                {"$count": "n"},
+            ],
+            "af_burden": [
+                {"$match": _RELIABLE_MATCH},
+                {"$group": {"_id": None,
+                            "max": {"$max": "$af_episode.af_burden_percent"}}},
+            ],
+            "stress_counts": [
+                {"$match": {**_RELIABLE_MATCH,
+                            "stress.label": {"$in": ["stress", "non_stress"]}}},
+                {"$group": {"_id": "$stress.label", "n": {"$sum": 1}}},
+            ],
+        }},
+    ])))
+
+    total = (_first(pred.get("total")) or {}).get("n", 0) if pred else 0
+    out["total_windows"] = int(total)
+    if not total:
+        out["has_data"] = False
+        out["reliable_windows"] = 0
+        return out
+
+    out["has_data"] = True
+    reliable = int((_first(pred.get("reliable")) or {}).get("n", 0))
+    out["reliable_windows"] = reliable
+    out["signal_quality"] = _facet_counts(pred.get("signal_quality"))
+    sq = out["signal_quality"]
+    good_signal_ratio = (
+        (sq.get("good", 0) + sq.get("fair", 0)) / total if total else 0.0
+    )
+    out["good_signal_ratio"] = round(good_signal_ratio, 4)
+
+    hr_stats = _first(pred.get("hr_stats"))
+    if hr_stats:
+        out["hr_stats"] = {
+            "n": int(hr_stats.get("n") or 0),
+            "mean": hr_stats.get("mean"),
+            "min": hr_stats.get("min"),
+            "max": hr_stats.get("max"),
+            "std": hr_stats.get("std"),
+        }
+    out["hr_bands"] = {label: 0 for label in _BAND_LABELS.values()}
+    for row in pred.get("bands") or []:
+        label = _BAND_LABELS.get(row.get("_id"))
+        if label:
+            out["hr_bands"][label] = int(row.get("n") or 0)
+
+    out["days_detail"] = [
+        {
+            "day": r["_id"],
+            "date": _session_id_to_iso(r["_id"]),
+            "n": int(r.get("n") or 0),
+            "mean": r.get("mean"),
+            "min": r.get("min"),
+            "max": r.get("max"),
+            "pct_over100": (int(r.get("over100") or 0) / int(r["n"]) * 100.0)
+            if r.get("n") else 0.0,
+            "pct_over120": (int(r.get("over120") or 0) / int(r["n"]) * 100.0)
+            if r.get("n") else 0.0,
+        }
+        for r in pred.get("per_day") or []
+    ]
+    day_count = len(out["days_detail"])
+    out["day_count"] = day_count
+
+    out["rhythm"] = _facet_counts(pred.get("rhythm"))
+    out["ectopy"] = _facet_counts(pred.get("ectopy"))
+    afib = _first(pred.get("afib")) or {}
+    afib_windows = int((_first(pred.get("afib_windows")) or {}).get("n", 0))
+    max_afib_probability = _safe_num(afib.get("max"))
+    max_af_burden = _safe_num((_first(pred.get("af_burden")) or {}).get("max"))
+    af_window_ratio = afib_windows / reliable if reliable else 0.0
+    out["afib"] = {
+        "mean": afib.get("mean"),
+        "max": max_afib_probability,
+        "window_ratio": round(af_window_ratio, 4),
+        "max_burden_percent": round(max_af_burden, 2),
+    }
+
+    stress_counts = _facet_counts(pred.get("stress_counts"))
+    valid = sum(stress_counts.values())
+    if valid:
+        stress_n = stress_counts.get("stress", 0)
+        out["stress_stats"] = {
+            "valid": valid,
+            "stress": stress_n,
+            "non_stress": stress_counts.get("non_stress", 0),
+            "pct_stress": stress_n / valid * 100.0,
+        }
+
+    # --- events over the period ---
+    ev = _first(list(db.events.aggregate([
+        {"$match": match},
+        {"$facet": {
+            "total": [{"$count": "n"}],
+            "by_type": [{"$group": {"_id": "$event_type", "n": {"$sum": 1}}}],
+            "by_severity": [{"$group": {"_id": "$severity", "n": {"$sum": 1}}}],
+            "critical": [
+                {"$match": {"severity": "critical"}},
+                {"$sort": {"timestamp": 1}},
+                {"$project": {"_id": 0,
+                              "date": {"$substrBytes": ["$timestamp", 0, 10]},
+                              "t": {"$substrBytes": ["$timestamp", 11, 8]},
+                              "type": "$event_type", "hr": "$heart_rate_bpm"}},
+            ],
+        }},
+    ]))) or {}
+    out["total_events"] = int((_first(ev.get("total")) or {}).get("n", 0))
+    out["event_types"] = _facet_counts(ev.get("by_type"))
+    out["event_severity"] = _facet_counts(ev.get("by_severity"))
+    out["critical_events"] = ev.get("critical") or []
+
+    # --- overall evaluation: reuse the shared rate-based long-term gate ---
+    overall_for_eval = {
+        "max_af_burden_percent": max_af_burden,
+        "max_afib_probability": max_afib_probability,
+        "af_suspicion_window_ratio": af_window_ratio,
+        "good_signal_ratio": good_signal_ratio,
+    }
+    eval_events = []
+    for etype, count in out["event_types"].items():
+        mapped = _EVAL_TYPE_ALIASES.get(etype, etype)
+        eval_events.extend({"event_type": mapped} for _ in range(int(count)))
+    level, summary, findings = evaluate_long_term_findings(
+        overall_for_eval, eval_events, day_count
+    )
+    out["assessment"] = {
+        "level": level,
+        "score": SEVERITY_SCORE.get(level, 0.0),
+        "summary": summary,
+        "findings": findings,
+    }
+    return out
+
+
+def _safe_num(value, default=0.0):
+    try:
+        return float(value) if value is not None else float(default)
+    except (TypeError, ValueError):
+        return float(default)
 
 
 def compute_daily_report(patient_id="polar_h10", date=None):
