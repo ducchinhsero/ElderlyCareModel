@@ -351,6 +351,11 @@ polar_status = {
     "reconnect_count": 0,
     "last_connected_at": None,
     "last_disconnected_at": None,
+    # Polar BLE HR Measurement "Sensor Contact" status. ``sensor_contact`` is
+    # True/False when the strap reports contact support, else None (unknown).
+    "sensor_contact_supported": False,
+    "sensor_contact": None,
+    "sensor_contact_updated_at": None,
 }
 calibrated_anomaly_cache = {}
 af_episode_trackers = {}
@@ -946,7 +951,7 @@ def _unknown_outputs_for_quality(signal_quality):
     return stress, anomaly, risk
 
 
-def _poor_signal_result(patient_id, sample_rate_hz, reason, acc_samples=None, acc_sample_rate_hz=None):
+def _poor_signal_result(patient_id, sample_rate_hz, reason, acc_samples=None, acc_sample_rate_hz=None, message=None):
     signal_quality = {
         "label": "poor",
         "score": 0.0,
@@ -974,7 +979,7 @@ def _poor_signal_result(patient_id, sample_rate_hz, reason, acc_samples=None, ac
     )
     alert_level, message = _apply_sensor_context_alert(
         "medium",
-        "Poor ECG signal quality. Check Polar H10 strap contact and fit.",
+        message or "Poor ECG signal quality. Check Polar H10 strap contact and fit.",
         sensor_context,
     )
     timestamp = datetime.now().astimezone().isoformat()
@@ -1065,7 +1070,12 @@ def _quality_metrics_support_hr(signal_quality):
     valid_rr_ratio = float(metrics.get("valid_rr_ratio") or 0.0)
     r_peak_rate_bpm = float(metrics.get("r_peak_rate_bpm") or 0.0)
     beat_template_correlation = metrics.get("beat_template_correlation")
-    if beat_template_correlation is not None and float(beat_template_correlation) < 0.65:
+    # Require a verifiable, sufficiently ECG-like beat morphology before we are
+    # willing to report a heart rate on a "poor" window. When the strap is off
+    # the body the QRS template cannot be confirmed (correlation is None) yet
+    # mains/motion artifacts can still produce regular "R-peaks" that pass the
+    # count/RR checks below — that is exactly what leaks a fake HR to the app.
+    if beat_template_correlation is None or float(beat_template_correlation) < 0.65:
         return False
     return (
         r_peak_count >= 6
@@ -1380,6 +1390,18 @@ async def bluetooth_prediction_stream(address, chunk_seconds=10):
     def hr_callback(sender, data):
         flag = data[0]
         offset = 1
+        # BLE HR Measurement flags: bit2 (0x04) = sensor contact supported,
+        # bit1 (0x02) = sensor contact detected. Polar H10 supports this and
+        # clears the "detected" bit when the strap is off the body, which is the
+        # most reliable "not worn / loose" signal we have on a live connection.
+        contact_supported = bool(flag & 0x04)
+        if contact_supported:
+            polar_status["sensor_contact_supported"] = True
+            polar_status["sensor_contact"] = bool(flag & 0x02)
+        else:
+            polar_status["sensor_contact_supported"] = False
+            polar_status["sensor_contact"] = None
+        polar_status["sensor_contact_updated_at"] = datetime.now().astimezone().isoformat()
         if flag & 0x01:
             offset += 2
         else:
@@ -1515,6 +1537,32 @@ async def bluetooth_prediction_stream(address, chunk_seconds=10):
                     polar_status["last_prediction_at"] = result["timestamp"]
                     continue
 
+                # Strap removed / too loose while BLE stays connected: Polar keeps
+                # streaming noisy ECG, so trust its sensor-contact bit and skip the
+                # model + HR estimate instead of reporting an artifact heart rate.
+                if (
+                    polar_status.get("sensor_contact_supported")
+                    and polar_status.get("sensor_contact") is False
+                ):
+                    result = _poor_signal_result(
+                        patient_id="polar_h10",
+                        sample_rate_hz=REALTIME_SAMPLE_RATE_HZ,
+                        reason="Polar H10 sensor contact lost: device not worn or strap is loose.",
+                        acc_samples=acc_signal,
+                        acc_sample_rate_hz=FS_ACC_HZ if acc_signal else None,
+                        message="Thiết bị Polar H10 chưa được đeo hoặc dây quá lỏng (mất tiếp xúc da). Vui lòng đeo lại.",
+                    )
+                    record_result(
+                        result,
+                        ecg_samples=[],
+                        sample_rate_hz=REALTIME_SAMPLE_RATE_HZ,
+                        acc_samples=acc_signal,
+                        acc_sample_rate_hz=FS_ACC_HZ if acc_signal else None,
+                    )
+                    polar_status["last_update"] = result["timestamp"]
+                    polar_status["last_prediction_at"] = result["timestamp"]
+                    continue
+
                 result = predict_ecg(
                     ecg_signal,
                     sample_rate_hz=REALTIME_SAMPLE_RATE_HZ,
@@ -1534,6 +1582,9 @@ async def bluetooth_prediction_stream(address, chunk_seconds=10):
                 print(result)
         finally:
             polar_status["last_disconnected_at"] = datetime.now().astimezone().isoformat()
+            # Drop the contact reading so a stale value can't gate the next session.
+            polar_status["sensor_contact_supported"] = False
+            polar_status["sensor_contact"] = None
             try:
                 await client.write_gatt_char(PMD_CONTROL, ACC_STOP_CMD, response=True)
             except Exception:
