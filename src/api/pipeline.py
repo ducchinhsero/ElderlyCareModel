@@ -1580,6 +1580,13 @@ async def polar_background_collector(address, chunk_seconds=10):
                     f"Polar background collector error: {error_text}. "
                     f"Reconnecting in {POLAR_RECONNECT_SECONDS} seconds."
                 )
+                if latest_result is None or (latest_result.get("signal_quality") or {}).get("label") != "poor":
+                    poor_res = _poor_signal_result(
+                        patient_id="polar_h10",
+                        sample_rate_hz=REALTIME_SAMPLE_RATE_HZ,
+                        reason=f"Polar H10 BLE disconnected: {error_text}",
+                    )
+                    record_result(poor_res)
                 await asyncio.sleep(POLAR_RECONNECT_SECONDS)
     finally:
         polar_status["running"] = False

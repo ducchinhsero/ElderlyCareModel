@@ -18,9 +18,10 @@ Run: uvicorn src.api.cloud_reader:app --host 0.0.0.0 --port $PORT
 Realtime live vitals are NOT served here — those require the Pi (Tailscale).
 This service is the "previous days / reports" data path.
 """
+import asyncio
 import os
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
@@ -62,6 +63,9 @@ app.add_middleware(
 
 @app.middleware("http")
 async def api_key_middleware(request: Request, call_next):
+    # Pass WebSockets to their specific handlers for custom authentication
+    if request.scope.get("type") == "websocket":
+        return await call_next(request)
     if not API_AUTH_ENABLED or request.method.upper() == "OPTIONS":
         return await call_next(request)
     if request.url.path in PUBLIC_PATHS:
@@ -228,3 +232,114 @@ def health_report(
         "overall": {"level": "unknown", "summary": ""},
         "disclaimer": "Tóm tắt nhiều lớp cần Pi; dùng Báo cáo theo ngày để xem dữ liệu cloud.",
     }
+
+
+def _valid_api_key(key: str | None) -> bool:
+    if not API_AUTH_ENABLED:
+        return True
+    if not API_KEY:
+        return False
+    return (key or "").strip() == API_KEY
+
+
+@app.websocket("/ws/vitals")
+async def ws_vitals(websocket: WebSocket):
+    if API_AUTH_ENABLED:
+        supplied_key = websocket.headers.get("X-API-Key") or websocket.query_params.get("api_key")
+        if not _valid_api_key(supplied_key):
+            await websocket.close(code=1008)
+            return
+    await websocket.accept()
+    patient_id = websocket.query_params.get("patient_id") or "polar_h10"
+    try:
+        last_sent_timestamp = None
+        while True:
+            db = _db()
+            doc = db.predictions.find_one({"patient_id": patient_id}, sort=_PRED_SORT)
+            if doc:
+                doc_timestamp = doc.get("timestamp")
+                if doc_timestamp != last_sent_timestamp:
+                    payload = {
+                        "type": "vitals",
+                        "latest_result": doc,
+                        "timestamp": doc_timestamp,
+                        "polar": {"connected": False, "auto_start": False, "source": "cloud"},
+                        "source": "cloud_archive",
+                    }
+                    if "_id" in doc:
+                        del doc["_id"]
+                    await websocket.send_json(payload)
+                    last_sent_timestamp = doc_timestamp
+            await asyncio.sleep(3.0)
+    except WebSocketDisconnect:
+        pass
+    except Exception as exc:
+        print(f"WS vitals error: {exc}")
+        try:
+            await websocket.close()
+        except Exception:
+            pass
+
+
+@app.websocket("/ws/alerts")
+async def ws_alerts(websocket: WebSocket):
+    if API_AUTH_ENABLED:
+        supplied_key = websocket.headers.get("X-API-Key") or websocket.query_params.get("api_key")
+        if not _valid_api_key(supplied_key):
+            await websocket.close(code=1008)
+            return
+    patient_id = websocket.query_params.get("patient_id") or "polar_h10"
+    await websocket.accept()
+    try:
+        db = _db()
+        backlog_docs = list(
+            db.events.find(
+                {"patient_id": patient_id, "severity": {"$in": ["high", "critical"]}},
+                {"_id": 0}
+            )
+            .sort(_EVENT_SORT)
+            .limit(50)
+        )
+        await websocket.send_json({
+            "type": "alert_backlog",
+            "alerts": backlog_docs,
+            "alert_count": len(backlog_docs),
+        })
+
+        last_event_time = None
+        if backlog_docs:
+            sorted_backlog = sorted(backlog_docs, key=lambda x: x.get("timestamp", ""))
+            last_event_time = sorted_backlog[-1].get("timestamp")
+
+        while True:
+            db = _db()
+            query = {
+                "patient_id": patient_id,
+                "severity": {"$in": ["high", "critical"]}
+            }
+            if last_event_time:
+                query["timestamp"] = {"$gt": last_event_time}
+            
+            new_events = list(
+                db.events.find(query, {"_id": 0})
+                .sort(_EVENT_SORT)
+                .limit(10)
+            )
+            if new_events:
+                for event in reversed(new_events):
+                    await websocket.send_json({
+                        "type": "alert",
+                        "alert": event,
+                        "timestamp": event.get("timestamp"),
+                    })
+                sorted_new = sorted(new_events, key=lambda x: x.get("timestamp", ""))
+                last_event_time = sorted_new[-1].get("timestamp")
+            await asyncio.sleep(3.0)
+    except WebSocketDisconnect:
+        pass
+    except Exception as exc:
+        print(f"WS alerts error: {exc}")
+        try:
+            await websocket.close()
+        except Exception:
+            pass
