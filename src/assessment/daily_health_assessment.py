@@ -1,7 +1,20 @@
+import os
 from datetime import datetime, timedelta, timezone
 
 from src.storage.ecg_storage import build_event_timeline, get_history
 
+
+def _env_bool(name, default=False):
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+# Mirror the pipeline's ANOMALY_ENABLED toggle so the daily assessment never
+# surfaces an anomaly finding when the anomaly model is disabled in the runtime
+# (and so it ignores anomaly blocks recorded while it was still enabled).
+ANOMALY_ENABLED = _env_bool("ANOMALY_ENABLED", default=True)
 
 DISCLAIMER = "This is a screening/risk assessment output, not a medical diagnosis."
 RELIABLE_QUALITY = {"good", "fair"}
@@ -321,7 +334,9 @@ def _build_findings(history, events, data_quality):
 
     anomaly_count = sum(1 for item in history if _abnormal_anomaly_item(item))
     anomaly_ratio = anomaly_count / denominator
-    if anomaly_count >= 10 or anomaly_ratio >= 0.20:
+    if not ANOMALY_ENABLED:
+        anomaly_level = None
+    elif anomaly_count >= 10 or anomaly_ratio >= 0.20:
         anomaly_level = "high"
     elif anomaly_count >= 3 or anomaly_ratio >= 0.05:
         anomaly_level = "medium"

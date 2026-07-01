@@ -1,4 +1,5 @@
 from src.assessment.daily_health_assessment import (
+    ANOMALY_ENABLED,
     DISCLAIMER,
     SEVERITY_ORDER,
     compute_daily_health_assessment,
@@ -213,7 +214,7 @@ def _realtime_layer(latest, minutes=DEFAULT_REALTIME_MINUTES):
             "stress": stress.get("label"),
             "rhythm": rhythm.get("label"),
             "ectopy": ectopy.get("label"),
-            "anomaly": (latest.get("anomaly") or {}).get("label"),
+            "anomaly": (latest.get("anomaly") or {}).get("label") if ANOMALY_ENABLED else None,
             "signal_quality": quality.get("label"),
             "activity": sensor.get("activity_state"),
         },

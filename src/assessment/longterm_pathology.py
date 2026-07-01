@@ -28,6 +28,7 @@ Output is consumed by ``GET /pathology-report`` and embedded as the
 from datetime import datetime, timedelta, timezone
 
 from src.assessment.daily_health_assessment import (
+    ANOMALY_ENABLED,
     DISCLAIMER,
     SEVERITY_ORDER,
     SEVERITY_SCORE,
@@ -496,7 +497,7 @@ def _baseline_indicator(baseline_comparison):
     if af_delta >= 0.05:
         signals.append(f"AFib-suspicion ratio {af_delta:+.1%} vs baseline")
         score += 2 if af_delta >= 0.10 else 1
-    if abnormal_delta >= 0.10:
+    if ANOMALY_ENABLED and abnormal_delta >= 0.10:
         signals.append(f"ECG anomaly ratio {abnormal_delta:+.1%} vs baseline")
         score += 1
     if ectopy_delta >= 0.05:
